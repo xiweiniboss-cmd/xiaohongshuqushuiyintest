@@ -408,6 +408,17 @@ async function handleParse(request, env) {
           return json({ ok: false, error: `解析太频繁，请 ${remain} 秒后再试` }, 429);
       }
     }
+
+    // 每日解析限额：同一 IP 每天最多 20 次（防刷 API 烧积分），按北京时间算天
+    const DAILY_LIMIT = 20;
+    const bjDate = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+    const quotaKey = 'dlimit_xhs_' + parseIp + '_' + bjDate;
+    let usedToday = 0;
+    if (parseIp && env.FEEDBACK_KV) {
+      try { usedToday = Number((await env.FEEDBACK_KV.get(quotaKey)) || 0); } catch {}
+      if (usedToday >= DAILY_LIMIT)
+        return json({ ok: false, error: '今日解析次数已用完（20 次），明天再来吧' }, 429);
+    }
     const result = await parseShareViaRedFox(shareText, apiKey, debug);
     if (parseIp && env.FEEDBACK_KV)
       await env.FEEDBACK_KV.put('pcool_' + parseIp, String(Date.now()), {
@@ -418,6 +429,12 @@ async function handleParse(request, env) {
       try {
         const cur = Number((await env.FEEDBACK_KV.get('stats_parse_xhs')) || 0);
         await env.FEEDBACK_KV.put('stats_parse_xhs', String(cur + 1));
+      } catch {}
+    }
+    // 每日限额计数（仅成功计数，48小时过期）
+    if (parseIp && env.FEEDBACK_KV) {
+      try {
+        await env.FEEDBACK_KV.put(quotaKey, String(usedToday + 1), { expirationTtl: 172800 });
       } catch {}
     }
     // 解析者归属地分布（按站点+国家聚合）
@@ -1040,6 +1057,19 @@ async function handleGeoStats(request, env) {
   return json({ ok: true, byCountry, bySite });
 }
 
+
+/* ================= 每日解析配额 ================= */
+async function handleParseQuota(request, env) {
+  const DAILY_LIMIT = 20;
+  const ip = request.headers.get('cf-connecting-ip') || '';
+  const bjDate = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+  let used = 0;
+  if (ip && env.FEEDBACK_KV) {
+    try { used = Number((await env.FEEDBACK_KV.get('dlimit_xhs_' + ip + '_' + bjDate)) || 0); } catch {}
+  }
+  return json({ ok: true, limit: DAILY_LIMIT, used, remaining: Math.max(0, DAILY_LIMIT - used) });
+}
+
 /* ================= 数据总览 ================= */
 async function handleStatsAll(request, env) {
   const url = new URL(request.url);
@@ -1089,6 +1119,7 @@ export default {
     }
     if (url.pathname.startsWith('/api/fb-file/')) return handleFeedbackFile(request, env);
     if (url.pathname === '/api/stats-all') return handleStatsAll(request, env);
+    if (url.pathname === '/api/parse-quota') return handleParseQuota(request, env);
     if (url.pathname === '/api/geo-stats') return handleGeoStats(request, env);
     if (url.pathname === '/api/parse-history') return handleParseHistory(request, env);
     if (url.pathname === '/dashboard') {
