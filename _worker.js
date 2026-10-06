@@ -173,36 +173,64 @@ function extractVideoUrl(data) {
   return scored[0][0];
 }
 
-// 从分享链接跟随跳转拿到真实笔记 URL（免费，不调计费接口）
-async function resolveNoteUrl(shareText) {
+// 从笔记 URL 提取 24 位 noteId（路径优先，宽松匹配兜底）
+function extractNoteId(url) {
+  const s = String(url || '');
+  let m = s.match(/\/(?:explore|discovery\/item)\/([0-9a-f]{24})/i);
+  if (m) return m[1];
+  m = s.match(/(^|[^0-9a-f])([0-9a-f]{24})([^0-9a-f]|$)/i);
+  return m ? m[2] : null;
+}
+
+// 跟随跳转，并在每一跳里找 noteId（找到就停，不走到登录页）
+async function resolveNoteId(shareText) {
   let url = extractFirstUrl(shareText);
-  for (let i = 0; i < 5; i++) {
-    const r = await fetch(url, {
-      method: 'GET',
-      redirect: 'manual',
-      headers: { 'User-Agent': UA_PC, Referer: 'https://www.xiaohongshu.com/' },
-    });
+  let noteId = extractNoteId(url);
+  for (let i = 0; i < 5 && !noteId; i++) {
+    let r;
+    try {
+      r = await fetch(url, {
+        method: 'GET',
+        redirect: 'manual',
+        headers: { 'User-Agent': UA_PC, Referer: 'https://www.xiaohongshu.com/' },
+      });
+    } catch {
+      break;
+    }
     const loc = r.headers.get('location');
     if (!loc || r.status < 300 || r.status >= 400) break;
     url = new URL(loc, url).href;
+    noteId = extractNoteId(url);
   }
-  return url;
-}
-
-// 从笔记 URL 提取 24 位 noteId
-function extractNoteId(url) {
-  const m = String(url || '').match(/\/(?:explore|discovery\/item)\/([0-9a-f]{24})/i);
-  return m ? m[1] : null;
+  return { noteId, noteUrl: url };
 }
 
 async function parseShareViaRedFox(shareText, apiKey) {
-  const noteUrl = await resolveNoteUrl(shareText);
-  const noteId = extractNoteId(noteUrl);
+  const originalUrl = extractFirstUrl(shareText); // 先校验链接有效性，避免无效输入浪费计费调用
   const errors = [];
 
-  // 路线一：笔记详情（workId），通常一次调用拿到标题+媒体
-  if (noteId) {
-    try {
+  // 路线一：通用无水印下载接口，短链/长链直传（RedFox 自己处理跳转，不经过我们被封的 IP）
+  try {
+    const data = await redfoxPost('/story/api/parseWork/parse', apiKey, { url: originalUrl });
+    const title = cleanTitle(data.title || data.desc, 'xhs_note');
+    const desc = String(data.desc || data.content || data.title || '');
+    const vurl = extractVideoUrl(data);
+    if (vurl) return { type: 'video', note_id: extractNoteId(originalUrl) || '', title, desc, video_url: vurl };
+    const images = extractImages(data);
+    if (images.length) return { type: 'image', note_id: extractNoteId(originalUrl) || '', title, desc, images };
+    errors.push('下载接口未返回媒体地址');
+  } catch (e) {
+    // 鉴权/余额/限流问题直接抛，不再浪费计费调用
+    if (/API Key|鉴权|余额|频繁/.test(e.message)) throw e;
+    errors.push('下载接口：' + e.message);
+  }
+
+  // 路线二：跳转链里找 noteId → 笔记详情接口
+  try {
+    const { noteId } = await resolveNoteId(shareText);
+    if (!noteId) {
+      errors.push('未能从链接中识别笔记 ID');
+    } else {
       const data = await redfoxPost('/story/api/xhsUser/queryWorkDetail', apiKey, { workId: noteId });
       const title = cleanTitle(data.title || data.desc, 'xhs_' + noteId);
       const desc = String(data.desc || data.content || data.title || '');
@@ -211,28 +239,10 @@ async function parseShareViaRedFox(shareText, apiKey) {
       const images = extractImages(data);
       if (images.length) return { type: 'image', note_id: noteId, title, desc, images };
       errors.push('笔记详情未返回媒体地址');
-    } catch (e) {
-      // 鉴权/余额/限流问题直接抛，不再浪费计费调用
-      if (/API Key|鉴权|余额|频繁/.test(e.message)) throw e;
-      errors.push('笔记详情：' + e.message);
     }
-  } else {
-    errors.push('未能从链接中识别笔记 ID');
-  }
-
-  // 路线二：通用无水印下载接口（URL 直传，短链/长链均可）
-  try {
-    const data = await redfoxPost('/story/api/parseWork/parse', apiKey, { url: noteUrl });
-    const title = cleanTitle(data.title || data.desc, 'xhs_' + (noteId || 'note'));
-    const desc = String(data.desc || data.content || data.title || '');
-    const vurl = extractVideoUrl(data);
-    if (vurl) return { type: 'video', note_id: noteId || '', title, desc, video_url: vurl };
-    const images = extractImages(data);
-    if (images.length) return { type: 'image', note_id: noteId || '', title, desc, images };
-    errors.push('下载接口未返回媒体地址');
   } catch (e) {
     if (/API Key|鉴权|余额|频繁/.test(e.message)) throw e;
-    errors.push('下载接口：' + e.message);
+    errors.push('笔记详情：' + e.message);
   }
 
   throw new Error(errors.join('；') || '解析失败（笔记可能已删除或设为私密）');
