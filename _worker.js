@@ -689,6 +689,7 @@ const ADMIN_HTML = `<!DOCTYPE html>
 h1{font-size:20px;margin:8px 0 4px}h1 span{font-size:13px;color:#888;font-weight:400}
 .fb{background:#fff;border-radius:12px;padding:12px 14px;margin-top:12px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
 .fb .meta{font-size:12px;color:#999;margin-bottom:6px}
+.fb .site{font-size:11px;color:#ff2442;font-weight:600}
 .fb .msg{font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
 .fb button{margin-top:8px;background:#f0f0f2;border:none;border-radius:8px;padding:8px 16px;font-size:13px;color:#c00}
 .empty{text-align:center;color:#aaa;margin-top:40px;font-size:14px}
@@ -699,6 +700,14 @@ h1{font-size:20px;margin:8px 0 4px}h1 span{font-size:13px;color:#888;font-weight
 </div><script>
 const key = new URLSearchParams(location.search).get('key') || '';
 const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const siteName = (p) => {
+  try {
+    const h = new URL(p).hostname;
+    if (h.includes('tiktok')) return 'TikTok站';
+    if (h.includes('xiaohongshu')) return '小红书站';
+    return h;
+  } catch { return ''; }
+};
 async function load() {
   const box = document.getElementById('list');
   try {
@@ -712,7 +721,7 @@ async function load() {
       const d = document.createElement('div');
       d.className = 'fb';
       const t = new Date(it.time).toLocaleString('zh-CN', { hour12: false });
-      d.innerHTML = '<div class="meta">' + esc(t) + (it.contact ? ' · ' + esc(it.contact) : '') + '</div>' +
+      d.innerHTML = '<div class="meta"><span class="site">[' + esc(siteName(it.page)) + ']</span> ' + esc(t) + (it.contact ? ' · ' + esc(it.contact) : '') + '</div>' +
         '<div class="msg">' + esc(it.message) + '</div>';
       if (it.attachments && it.attachments.length) {
         const att = document.createElement('div');
