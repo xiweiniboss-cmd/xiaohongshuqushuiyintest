@@ -1,6 +1,6 @@
-// Cloudflare Pages 单文件 Worker（TikHub 版）
-// 小红书已封锁数据中心 IP 的匿名抓取，解析改走 TikHub API
-// 需要环境变量 TIKHUB_TOKEN（去 user.tikhub.io 注册并创建 token，填到 Pages → Settings → Environment variables）
+// Cloudflare Pages 单文件 Worker（RedFoxHub 版）
+// 小红书已封锁数据中心 IP 的匿名抓取，解析改走 RedFoxHub API
+// 需要环境变量 REDFOX_API_KEY（去 redfox.hk 注册，控制台「API密钥」创建，填到 Pages → Settings → Environment variables）
 // 部署：本文件放仓库根目录（与 index.html 同级）
 
 /* ================= 公共 ================= */
@@ -18,9 +18,7 @@ function json(data, status = 200) {
 const UA_PC =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
 
-const TIKHUB_BASE = 'https://api.tikhub.io';
-const EP_VIDEO = '/api/v1/xiaohongshu/app_v2/get_video_note_detail';
-const EP_IMAGE = '/api/v1/xiaohongshu/app_v2/get_image_note_detail';
+const REDFOX_BASE = 'https://redfox.hk';
 
 function extractFirstUrl(text) {
   const m = String(text || '').match(/https?:\/\/[^\s"'<>\\]+/);
@@ -72,59 +70,47 @@ function deepFindUrls(obj, out = [], seenObjs = new Set()) {
   return out;
 }
 
-/* ================= TikHub ================= */
-async function tikhubCall(endpoint, shareText, token) {
-  const url = TIKHUB_BASE + endpoint + '?share_text=' + encodeURIComponent(shareText);
+/* ================= RedFoxHub ================= */
+// 鉴权：请求头 REDFOX_API_KEY；成功码 code=2000；data 为业务数据
+async function redfoxPost(path, apiKey, body) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 25000);
   try {
-    const resp = await fetch(url, {
-      headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
+    const resp = await fetch(REDFOX_BASE + path, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        REDFOX_API_KEY: apiKey,
+        'User-Agent': UA_PC,
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({ ...body, source: 'xhs-dl-pages' }),
       signal: ctrl.signal,
     });
     const text = await resp.text();
-    let body = null;
+    let j = null;
     try {
-      body = JSON.parse(text);
+      j = JSON.parse(text);
     } catch {
-      throw new Error('TikHub 返回了非 JSON 数据（HTTP ' + resp.status + '）');
+      throw new Error('RedFoxHub 返回了非 JSON 数据（HTTP ' + resp.status + '）');
     }
-    if (resp.status === 401 || resp.status === 403) {
-      let detail = '';
-      try {
-        const t = await resp.text();
-        try { const j = JSON.parse(t); detail = j.message || j.msg || j.error || ''; }
-        catch { detail = t.slice(0, 120); }
-      } catch { /* ignore */ }
-      throw new Error(
-        'TikHub 拒绝了 Token（HTTP ' + resp.status + '）' + (detail ? '：' + detail : '') +
-        '。请检查：① TikHub 账号邮箱是否已验证 ② token 是否在用户中心「API token」创建且状态可用 ③ 值是否复制完整；仍不行请删除重建一个新 token 后更新环境变量并重新部署'
-      );
+    if (resp.status === 401)
+      throw new Error('RedFoxHub API Key 无效，请检查环境变量 REDFOX_API_KEY 是否正确');
+    if (resp.status === 429) throw new Error('请求太频繁，请稍后重试');
+    const code = j.code;
+    const msg = String(j.msg || j.message || '');
+    if (code && code !== 2000) {
+      if (code === 401 || code === 4001)
+        throw new Error('RedFoxHub 鉴权失败：' + msg);
+      if (/余额|balance|insufficient|欠费/i.test(msg))
+        throw new Error('RedFoxHub 余额不足，请前往 redfox.hk 控制台充值后再试');
+      throw new Error('RedFoxHub：' + (msg || 'code=' + code));
     }
-    if (resp.status === 402)
-      throw new Error('TikHub 余额不足，请前往 TikHub 后台充值后再试');
-    if (resp.status === 429) throw new Error('TikHub 请求太频繁，请稍后重试');
-    if (!resp.ok)
-      throw new Error(
-        'TikHub 请求失败（HTTP ' + resp.status + '）：' + (body.message_zh || body.message || '')
-      );
-    if (body.code && body.code !== 200)
-      throw new Error('TikHub 接口报错：' + (body.message_zh || body.message || 'code=' + body.code));
-    return body;
+    if (!resp.ok) throw new Error('RedFoxHub 请求失败（HTTP ' + resp.status + '）' + (msg ? '：' + msg : ''));
+    return j.data !== undefined ? j.data : j;
   } finally {
     clearTimeout(timer);
   }
-}
-
-// 从 TikHub 返回中定位 note 对象（data.data[0].note_list[0]，带多种兜底）
-function tikhubNote(body) {
-  const d = body?.data;
-  const arr = Array.isArray(d?.data) ? d.data : Array.isArray(d) ? d : null;
-  const first = arr?.[0];
-  const note = first?.note_list?.[0] || first?.note || first;
-  if (!note || typeof note !== 'object') return null;
-  if (!note.id && !note.title && !note.desc) return null;
-  return note;
 }
 
 function pickImageUrl(item) {
@@ -133,7 +119,7 @@ function pickImageUrl(item) {
   return item.url || item.url_default || item.image_url || item.src || item.link || null;
 }
 
-function extractImages(note) {
+function extractImages(data) {
   const out = [];
   const seen = new Set();
   const push = (u) => {
@@ -143,20 +129,20 @@ function extractImages(note) {
     seen.add(h);
     out.push({ url_webp: h, url_png: convertToPng(h) || h, width: null, height: null });
   };
-  for (const key of ['images_list', 'image_list', 'imageList', 'images']) {
-    const list = note[key];
+  for (const key of ['images_list', 'image_list', 'imageList', 'images', 'pic_list']) {
+    const list = data[key];
     if (Array.isArray(list)) for (const item of list) push(pickImageUrl(item));
   }
   if (!out.length) {
     // 兜底：深搜图片 CDN 链接
-    for (const u of deepFindUrls(note)) {
+    for (const u of deepFindUrls(data)) {
       if (/xhscdn\.com/i.test(u) && !isVideoUrl(u) && !/(avatar|watermark)/i.test(u)) push(u);
     }
   }
   return out;
 }
 
-function extractVideoUrl(note) {
+function extractVideoUrl(data) {
   const candidates = [];
   const push = (u) => {
     if (typeof u !== 'string' || !u) return;
@@ -164,13 +150,17 @@ function extractVideoUrl(note) {
     if (isVideoUrl(h) && !candidates.includes(h)) candidates.push(h);
   };
   // 结构化字段优先
-  push(note.video_url);
-  push(note.video?.url);
-  push(note.video_info?.url);
-  push(note.media?.video_url);
-  push(note.video?.play_url);
+  push(data.video_url);
+  push(data.videoUrl);
+  push(data.download_url);
+  push(data.downloadUrl);
+  push(data.url);
+  push(data.video?.url);
+  push(data.video_info?.url);
+  push(data.media?.video_url);
+  push(data.video?.play_url);
   // 兜底：深搜 mp4 链接
-  for (const u of deepFindUrls(note)) push(u);
+  for (const u of deepFindUrls(data)) push(u);
   if (!candidates.length) return null;
   // 打分：https 优先，含 wm/watermark 的降权
   const scored = candidates.map((u) => {
@@ -183,79 +173,80 @@ function extractVideoUrl(note) {
   return scored[0][0];
 }
 
-// 免费判断图文/视频类型：只跟随短链跳转读 type 参数，不调计费接口
-async function detectTypeHint(shareText) {
-  try {
-    let url = extractFirstUrl(shareText);
-    for (let i = 0; i < 5; i++) {
-      const r = await fetch(url, {
-        method: 'GET',
-        redirect: 'manual',
-        headers: { 'User-Agent': UA_PC, Referer: 'https://www.xiaohongshu.com/' },
-      });
-      const loc = r.headers.get('location');
-      if (!loc || r.status < 300 || r.status >= 400) break;
-      url = new URL(loc, url).href;
-    }
-    const t = (new URL(url).searchParams.get('type') || '').toLowerCase();
-    if (t === 'video') return 'video';
-    if (t === 'normal' || t === 'image') return 'image';
-  } catch {
-    /* ignore */
+// 从分享链接跟随跳转拿到真实笔记 URL（免费，不调计费接口）
+async function resolveNoteUrl(shareText) {
+  let url = extractFirstUrl(shareText);
+  for (let i = 0; i < 5; i++) {
+    const r = await fetch(url, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: { 'User-Agent': UA_PC, Referer: 'https://www.xiaohongshu.com/' },
+    });
+    const loc = r.headers.get('location');
+    if (!loc || r.status < 300 || r.status >= 400) break;
+    url = new URL(loc, url).href;
   }
-  return null;
+  return url;
 }
 
-async function parseShareViaTikHub(shareText, token) {
-  extractFirstUrl(shareText); // 先校验链接有效性，避免无效输入浪费计费调用
-  const hint = await detectTypeHint(shareText);
-  let first = EP_VIDEO,
-    second = EP_IMAGE;
-  if (hint === 'image') [first, second] = [second, first];
+// 从笔记 URL 提取 24 位 noteId
+function extractNoteId(url) {
+  const m = String(url || '').match(/\/(?:explore|discovery\/item)\/([0-9a-f]{24})/i);
+  return m ? m[1] : null;
+}
 
+async function parseShareViaRedFox(shareText, apiKey) {
+  const noteUrl = await resolveNoteUrl(shareText);
+  const noteId = extractNoteId(noteUrl);
   const errors = [];
-  for (const ep of [first, second]) {
-    let body;
+
+  // 路线一：笔记详情（workId），通常一次调用拿到标题+媒体
+  if (noteId) {
     try {
-      body = await tikhubCall(ep, shareText, token);
-    } catch (e) {
-      // 鉴权/余额/限流问题直接抛，不再试另一个接口浪费计费
-      if (/Token|余额|频繁/.test(e.message)) throw e;
-      errors.push(e.message);
-      continue;
-    }
-    const note = tikhubNote(body);
-    if (!note) {
-      errors.push('TikHub 未返回笔记数据（笔记可能已删除或设为私密）');
-      continue;
-    }
-    const title = cleanTitle(note.title, 'xhs_' + (note.id || 'note'));
-    const desc = String(note.desc || note.content || '');
-    const noteId = String(note.id || note.note_id || '');
-    if (ep === EP_VIDEO) {
-      const vurl = extractVideoUrl(note);
+      const data = await redfoxPost('/story/api/xhsUser/queryWorkDetail', apiKey, { workId: noteId });
+      const title = cleanTitle(data.title || data.desc, 'xhs_' + noteId);
+      const desc = String(data.desc || data.content || data.title || '');
+      const vurl = extractVideoUrl(data);
       if (vurl) return { type: 'video', note_id: noteId, title, desc, video_url: vurl };
-      errors.push('视频接口未返回视频地址，尝试图文接口');
-    } else {
-      const images = extractImages(note);
-      if (images.length)
-        return { type: 'image', note_id: noteId, title, desc, images };
-      errors.push('图文接口未返回图片');
+      const images = extractImages(data);
+      if (images.length) return { type: 'image', note_id: noteId, title, desc, images };
+      errors.push('笔记详情未返回媒体地址');
+    } catch (e) {
+      // 鉴权/余额/限流问题直接抛，不再浪费计费调用
+      if (/API Key|鉴权|余额|频繁/.test(e.message)) throw e;
+      errors.push('笔记详情：' + e.message);
     }
+  } else {
+    errors.push('未能从链接中识别笔记 ID');
   }
-  throw new Error(errors.join('；') || '解析失败');
+
+  // 路线二：通用无水印下载接口（URL 直传，短链/长链均可）
+  try {
+    const data = await redfoxPost('/story/api/parseWork/parse', apiKey, { url: noteUrl });
+    const title = cleanTitle(data.title || data.desc, 'xhs_' + (noteId || 'note'));
+    const desc = String(data.desc || data.content || data.title || '');
+    const vurl = extractVideoUrl(data);
+    if (vurl) return { type: 'video', note_id: noteId || '', title, desc, video_url: vurl };
+    const images = extractImages(data);
+    if (images.length) return { type: 'image', note_id: noteId || '', title, desc, images };
+    errors.push('下载接口未返回媒体地址');
+  } catch (e) {
+    if (/API Key|鉴权|余额|频繁/.test(e.message)) throw e;
+    errors.push('下载接口：' + e.message);
+  }
+
+  throw new Error(errors.join('；') || '解析失败（笔记可能已删除或设为私密）');
 }
 
 async function handleParse(request, env) {
   try {
-    let token = (env.TIKHUB_TOKEN || env.TIKHUB_API_KEY || env.TIKHUB || '').trim();
-    token = token.replace(/^bearer\s+/i, ''); // 防止用户把 "Bearer xxx" 整个复制进来
-    if (!token) {
+    const apiKey = (env.REDFOX_API_KEY || '').trim();
+    if (!apiKey) {
       return json(
         {
           ok: false,
           error:
-            '未配置 TikHub Token：请去 user.tikhub.io 注册并创建 token，然后在 Cloudflare Pages → Settings → Environment variables 添加 TIKHUB_TOKEN（重新部署后生效）',
+            '未配置 RedFoxHub API Key：请去 redfox.hk 注册并在控制台「API密钥」创建一个 key，然后在 Cloudflare Pages → Settings → Environment variables 添加 REDFOX_API_KEY（重新部署后生效）',
         },
         500
       );
@@ -271,7 +262,7 @@ async function handleParse(request, env) {
       }
     }
     if (!shareText.trim()) return json({ ok: false, error: '请先粘贴小红书分享链接' }, 400);
-    const result = await parseShareViaTikHub(shareText, token);
+    const result = await parseShareViaRedFox(shareText, apiKey);
     return json({ ok: true, ...result });
   } catch (e) {
     return json({ ok: false, error: e.message || '解析失败，请稍后重试' });
