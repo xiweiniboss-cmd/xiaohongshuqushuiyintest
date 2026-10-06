@@ -389,6 +389,14 @@ async function handleParse(request, env) {
     }
     if (!shareText.trim()) return json({ ok: false, error: '请先粘贴小红书分享链接' }, 400);
     const debug = reqUrl.searchParams.get('debug') === '1';
+    // 解析接口人机验证（配了 TURNSTILE_SECRET_KEY 才生效）
+    const tsSecret = (env.TURNSTILE_SECRET_KEY || '').trim();
+    if (tsSecret) {
+      const tsToken = reqUrl.searchParams.get('turnstile') || '';
+      if (!tsToken) return json({ ok: false, error: '请先完成人机验证' }, 400);
+      const tsOk = await verifyTurnstile(tsToken, tsSecret, request.headers.get('cf-connecting-ip'));
+      if (!tsOk) return json({ ok: false, error: '人机验证未通过，请重试' }, 403);
+    }
     // 解析冷却：同一 IP 60 秒内只能解析一次（防刷 API 烧积分）
     const PARSE_COOLDOWN_SECS = 60;
     const parseIp = request.headers.get('cf-connecting-ip') || '';

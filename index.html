@@ -97,6 +97,7 @@
       <button class="btn-ghost" id="pasteBtn">一键粘贴</button>
       <button class="btn-primary" id="parseBtn">解析</button>
     </div>
+    <div id="tsParseWidget" style="margin-top:10px"></div>
     <div class="hint">解析走服务器抓取页面直链，无需登录。图片为原图 / 无损 PNG，视频为页面直链（本身无水印）。</div>
   </div>
 
@@ -329,12 +330,19 @@ function copyText(t, msg) {
 async function doParse() {
   const text = $('linkInput').value.trim();
   if (!text) { toast('请先粘贴小红书分享链接'); return; }
+  let tsToken = '';
+  if (tsParseWidgetId !== null) {
+    tsToken = turnstile.getResponse(tsParseWidgetId) || '';
+    if (!tsToken) { toast('请先完成人机验证'); return; }
+  }
   $('result').style.display = 'none';
   $('status').style.display = 'block';
   $('statusText').textContent = '正在解析，请稍候…';
   $('parseBtn').disabled = true;
   try {
-    const r = await fetch('/api/parse?url=' + encodeURIComponent(text));
+    let apiUrl = '/api/parse?url=' + encodeURIComponent(text);
+    if (tsToken) apiUrl += '&turnstile=' + encodeURIComponent(tsToken);
+    const r = await fetch(apiUrl);
     const ct = r.headers.get('content-type') || '';
     const bodyText = await r.text();
     // Safari 对非 JSON 调用 .json() 会报看不懂的英文错，这里先拦截并给中文指引
@@ -356,6 +364,7 @@ async function doParse() {
   } catch (e) {
     toast('解析失败：' + (e.message || e), 4200);
   } finally {
+    if (tsParseWidgetId !== null) { try { turnstile.reset(tsParseWidgetId); } catch {} }
     $('status').style.display = 'none';
     $('parseBtn').disabled = false;
   }
@@ -445,6 +454,21 @@ $('lbSave').onclick = () => {
 };
 
 $('parseBtn').onclick = doParse;
+
+/* 解析区 Turnstile（页面加载时渲染；没配 key 则不显示，直接解析） */
+let tsParseWidgetId = null;
+(function loadParseTurnstile() {
+  fetch('/api/turnstile-key').then((r) => r.json()).then((j) => {
+    if (!j.siteKey) return;
+    const s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+    s.async = true; s.defer = true;
+    s.onload = () => {
+      tsParseWidgetId = turnstile.render('#tsParseWidget', { sitekey: j.siteKey, theme: 'light', language: 'zh-cn' });
+    };
+    document.head.appendChild(s);
+  }).catch(() => {});
+})();
 $('pasteBtn').onclick = async () => {
   try {
     const t = await navigator.clipboard.readText();
