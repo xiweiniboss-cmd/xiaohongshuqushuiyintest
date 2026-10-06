@@ -136,7 +136,12 @@ function extractImages(data) {
   if (!out.length) {
     // 兜底：深搜图片 CDN 链接
     for (const u of deepFindUrls(data)) {
-      if (/xhscdn\.com/i.test(u) && !isVideoUrl(u) && !/(avatar|watermark)/i.test(u)) push(u);
+      if (
+        !isVideoUrl(u) &&
+        !/(avatar|watermark)/i.test(u) &&
+        (/xhscdn\.com/i.test(u) || /xiaohongshu\.com\/[^"'\s]*\.(jpe?g|png|webp|gif)/i.test(u))
+      )
+        push(u);
     }
   }
   return out;
@@ -205,11 +210,32 @@ async function resolveNoteId(shareText) {
   return { noteId, noteUrl: url };
 }
 
-async function parseShareViaRedFox(shareText, apiKey) {
+async function parseShareViaRedFox(shareText, apiKey, debug) {
   const originalUrl = extractFirstUrl(shareText); // 先校验链接有效性，避免无效输入浪费计费调用
   const errors = [];
+  const dbg = [];
+  const shortU = (u) => {
+    try {
+      const x = new URL(u);
+      return x.hostname + x.pathname.slice(0, 44);
+    } catch {
+      return String(u).slice(0, 60);
+    }
+  };
   const tryDownload = async (label, url) => {
-    const data = await redfoxPost('/story/api/parseWork/videoDownload/xhs', apiKey, { url });
+    let data;
+    try {
+      data = await redfoxPost('/story/api/parseWork/videoDownload/xhs', apiKey, { url });
+    } catch (e) {
+      if (debug) dbg.push({ url: shortU(url), fail: String(e.message).slice(0, 140) });
+      throw e;
+    }
+    if (debug)
+      dbg.push({
+        url: shortU(url),
+        ok2000: true,
+        keys: data && typeof data === 'object' ? Object.keys(data).slice(0, 25) : [typeof data],
+      });
     const title = cleanTitle(data.title || data.desc, 'xhs_note');
     const desc = String(data.desc || data.content || data.title || '');
     const vurl = extractVideoUrl(data);
@@ -238,6 +264,20 @@ async function parseShareViaRedFox(shareText, apiKey) {
   // 路线一：小红书专用下载接口。优先带 xsec_token 的完整链接（RedFox 要求的格式），
   // 其次原始短链（RedFox 自己解析跳转），最后无 token 的标准链接
   const urls = [];
+  // 把第一跳 URL 里的 xsec_token 提出来，拼成 RedFox 示例中的标准格式
+  // https://www.xiaohongshu.com/explore/{id}?xsec_token=xxx&xsec_source=pc_feed
+  if (fullUrl && noteId) {
+    try {
+      const token = new URL(fullUrl).searchParams.get('xsec_token');
+      if (token) {
+        urls.push(
+          `https://www.xiaohongshu.com/explore/${noteId}?xsec_token=${encodeURIComponent(token)}&xsec_source=pc_feed`
+        );
+      }
+    } catch {
+      /* ignore */
+    }
+  }
   if (fullUrl && !urls.includes(fullUrl)) urls.push(fullUrl);
   if (!urls.includes(originalUrl)) urls.push(originalUrl);
   if (noteId) {
@@ -272,7 +312,10 @@ async function parseShareViaRedFox(shareText, apiKey) {
     errors.push('未能从链接中识别笔记 ID');
   }
 
-  throw new Error(errors.join('；') || '解析失败（笔记可能已删除或设为私密）');
+  throw Object.assign(
+    new Error(errors.join('；') || '解析失败（笔记可能已删除或设为私密）'),
+    debug ? { debug: dbg } : {}
+  );
 }
 
 async function handleParse(request, env) {
@@ -299,10 +342,13 @@ async function handleParse(request, env) {
       }
     }
     if (!shareText.trim()) return json({ ok: false, error: '请先粘贴小红书分享链接' }, 400);
-    const result = await parseShareViaRedFox(shareText, apiKey);
+    const debug = reqUrl.searchParams.get('debug') === '1';
+    const result = await parseShareViaRedFox(shareText, apiKey, debug);
     return json({ ok: true, ...result });
   } catch (e) {
-    return json({ ok: false, error: e.message || '解析失败，请稍后重试' });
+    const out = { ok: false, error: e.message || '解析失败，请稍后重试' };
+    if (e.debug) out.debug = e.debug;
+    return json(out);
   }
 }
 
