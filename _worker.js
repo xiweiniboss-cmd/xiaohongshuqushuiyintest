@@ -389,7 +389,22 @@ async function handleParse(request, env) {
     }
     if (!shareText.trim()) return json({ ok: false, error: '请先粘贴小红书分享链接' }, 400);
     const debug = reqUrl.searchParams.get('debug') === '1';
+    // 解析冷却：同一 IP 60 秒内只能解析一次（防刷 API 烧积分）
+    const PARSE_COOLDOWN_SECS = 60;
+    const parseIp = request.headers.get('cf-connecting-ip') || '';
+    if (parseIp && env.FEEDBACK_KV) {
+      const lastTs = await env.FEEDBACK_KV.get('pcool_' + parseIp);
+      if (lastTs) {
+        const remain = PARSE_COOLDOWN_SECS - Math.floor((Date.now() - Number(lastTs)) / 1000);
+        if (remain > 0)
+          return json({ ok: false, error: `解析太频繁，请 ${remain} 秒后再试` }, 429);
+      }
+    }
     const result = await parseShareViaRedFox(shareText, apiKey, debug);
+    if (parseIp && env.FEEDBACK_KV)
+      await env.FEEDBACK_KV.put('pcool_' + parseIp, String(Date.now()), {
+        expirationTtl: PARSE_COOLDOWN_SECS,
+      });
     return json({ ok: true, ...result });
   } catch (e) {
     const out = { ok: false, error: e.message || '解析失败，请稍后重试' };
