@@ -145,6 +145,7 @@
       📎 添加截图/录屏（可选，最多3个，单个≤20MB）
     </label>
     <input type="file" id="fbFiles" accept="image/*,video/*" multiple style="margin-top:6px">
+    <div id="tsWidget" style="margin-top:10px"></div>
     <div class="row">
       <button class="btn-ghost" id="fbCancel">取消</button>
       <button class="btn-primary" id="fbSubmit">提交反馈</button>
@@ -456,7 +457,22 @@ $('pasteBtn').onclick = async () => {
 };
 
 /* 反馈表单 */
-$('fbBtn').onclick = () => $('fbWrap').classList.add('show');
+let tsWidgetId = null; // Turnstile 组件 id（没配 key 时为 null，直接提交）
+function loadTurnstile() {
+  if (tsWidgetId !== null || window.turnstileLoading) return;
+  window.turnstileLoading = true;
+  fetch('/api/turnstile-key').then((r) => r.json()).then((j) => {
+    if (!j.siteKey) return;
+    const s = document.createElement('script');
+    s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js';
+    s.async = true; s.defer = true;
+    s.onload = () => {
+      tsWidgetId = turnstile.render('#tsWidget', { sitekey: j.siteKey, theme: 'light', language: 'zh-cn' });
+    };
+    document.head.appendChild(s);
+  }).catch(() => {});
+}
+$('fbBtn').onclick = () => { $('fbWrap').classList.add('show'); loadTurnstile(); };
 $('fbBackdrop').onclick = () => $('fbWrap').classList.remove('show');
 $('fbCancel').onclick = () => $('fbWrap').classList.remove('show');
 $('fbSubmit').onclick = async () => {
@@ -468,6 +484,11 @@ $('fbSubmit').onclick = async () => {
     if (!/^(image|video)\//.test(f.type || '')) { toast('只支持图片和视频附件'); return; }
     if (f.size > 20 * 1024 * 1024) { toast('单个附件不能超过 20MB'); return; }
   }
+  let tsToken = '';
+  if (tsWidgetId !== null) {
+    tsToken = turnstile.getResponse(tsWidgetId) || '';
+    if (!tsToken) { toast('请先完成人机验证'); return; }
+  }
   const btn = $('fbSubmit');
   btn.disabled = true;
   btn.textContent = '提交中…';
@@ -476,6 +497,7 @@ $('fbSubmit').onclick = async () => {
     fd.append('message', msg);
     fd.append('contact', $('fbContact').value.trim());
     fd.append('page', location.href);
+    if (tsToken) fd.append('cf-turnstile-response', tsToken);
     for (const f of files) fd.append('files', f, f.name);
     const r = await fetch('/api/feedback', { method: 'POST', body: fd });
     const j = await r.json();
@@ -491,6 +513,7 @@ $('fbSubmit').onclick = async () => {
   } catch {
     toast('网络错误，请稍后重试');
   }
+  if (tsWidgetId !== null) { try { turnstile.reset(tsWidgetId); } catch {} }
   btn.disabled = false;
   btn.textContent = '提交反馈';
 };
