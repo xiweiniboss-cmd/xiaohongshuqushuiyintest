@@ -60,7 +60,9 @@ function convertToPng(webpUrl) {
 function deepFindUrls(obj, out = [], seenObjs = new Set()) {
   if (!obj || out.length > 200) return out;
   if (typeof obj === 'string') {
-    if (/^https?:\/\/[^\s"'<>\\]+$/i.test(obj)) out.push(obj);
+    let s = obj.trim();
+    if (/^\/\//.test(s)) s = 'https:' + s; // 协议相对 URL
+    if (/^https?:\/\/[^\s"'<>\\]+$/i.test(s)) out.push(s);
     return out;
   }
   if (typeof obj !== 'object' || seenObjs.has(obj)) return out;
@@ -116,7 +118,19 @@ async function redfoxPost(path, apiKey, body) {
 function pickImageUrl(item) {
   if (typeof item === 'string') return item;
   if (!item || typeof item !== 'object') return null;
-  return item.url || item.url_default || item.image_url || item.src || item.link || null;
+  if (Array.isArray(item.url_list) && item.url_list.length) return pickImageUrl(item.url_list[0]);
+  if (Array.isArray(item.urls) && item.urls.length) return pickImageUrl(item.urls[0]);
+  return (
+    item.url ||
+    item.url_default ||
+    item.image_url ||
+    item.download_url ||
+    item.downloadUrl ||
+    item.origin_url ||
+    item.src ||
+    item.link ||
+    null
+  );
 }
 
 function extractImages(data) {
@@ -129,7 +143,17 @@ function extractImages(data) {
     seen.add(h);
     out.push({ url_webp: h, url_png: convertToPng(h) || h, width: null, height: null });
   };
-  for (const key of ['images_list', 'image_list', 'imageList', 'images', 'pic_list']) {
+  for (const key of [
+    'images_list',
+    'image_list',
+    'imageList',
+    'images',
+    'pic_list',
+    'resources',
+    'resource',
+    'medias',
+    'media_list',
+  ]) {
     const list = data[key];
     if (Array.isArray(list)) for (const item of list) push(pickImageUrl(item));
   }
@@ -139,7 +163,10 @@ function extractImages(data) {
       if (
         !isVideoUrl(u) &&
         !/(avatar|watermark)/i.test(u) &&
-        (/xhscdn\.com/i.test(u) || /xiaohongshu\.com\/[^"'\s]*\.(jpe?g|png|webp|gif)/i.test(u))
+        (/xhscdn\.com/i.test(u) ||
+          /sns-webpic|sns-img/i.test(u) ||
+          /xiaohongshu\.com\/[^"'\s]*\.(jpe?g|png|webp|gif)/i.test(u) ||
+          /\.(jpe?g|png|webp|gif)(\?|$)/i.test(u))
       )
         push(u);
     }
@@ -230,12 +257,31 @@ async function parseShareViaRedFox(shareText, apiKey, debug) {
       if (debug) dbg.push({ url: shortU(url), fail: String(e.message).slice(0, 140) });
       throw e;
     }
-    if (debug)
-      dbg.push({
-        url: shortU(url),
-        ok2000: true,
-        keys: data && typeof data === 'object' ? Object.keys(data).slice(0, 25) : [typeof data],
-      });
+    if (debug) {
+      // debug：只输出结构（键名/类型/域名），不输出完整媒体地址
+      const shape = (v, d) => {
+        if (d > 2) return typeof v;
+        if (Array.isArray(v))
+          return { arr: v.length, first: v.length ? shape(v[0], d + 1) : null };
+        if (v && typeof v === 'object') {
+          const o = {};
+          for (const k of Object.keys(v).slice(0, 12)) o[k] = shape(v[k], d + 1);
+          return o;
+        }
+        if (typeof v === 'string') {
+          if (/^https?:\/\//i.test(v)) {
+            try {
+              return 'url:' + new URL(v).hostname;
+            } catch {
+              return 'url:?';
+            }
+          }
+          return `str(${v.length})`;
+        }
+        return typeof v;
+      };
+      dbg.push({ url: shortU(url), ok2000: true, shape: shape(data, 0) });
+    }
     const title = cleanTitle(data.title || data.desc, 'xhs_note');
     const desc = String(data.desc || data.content || data.title || '');
     const vurl = extractVideoUrl(data);
