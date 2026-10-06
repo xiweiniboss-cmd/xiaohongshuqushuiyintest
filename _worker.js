@@ -222,20 +222,28 @@ async function parseShareViaRedFox(shareText, apiKey) {
   };
   const isBillable = (e) => /API Key|鉴权|余额|频繁/.test(e.message);
 
-  // 先免费拿 noteId（只看跳转第一跳，不走到登录页）
+  // 先免费拿 noteId 和完整跳转 URL（只看跳转第一跳，不走到登录页；完整 URL 自带 xsec_token）
   let noteId = extractNoteId(originalUrl);
+  let fullUrl = noteId ? originalUrl : null;
   if (!noteId) {
     try {
-      noteId = (await resolveNoteId(shareText)).noteId;
+      const r = await resolveNoteId(shareText);
+      noteId = r.noteId;
+      fullUrl = r.noteUrl;
     } catch {
       /* ignore */
     }
   }
 
-  // 路线一：小红书专用下载接口。优先用标准 explore 链接（平台识别最稳），再试原始短链
+  // 路线一：小红书专用下载接口。优先带 xsec_token 的完整链接（RedFox 要求的格式），
+  // 其次原始短链（RedFox 自己解析跳转），最后无 token 的标准链接
   const urls = [];
-  if (noteId) urls.push(`https://www.xiaohongshu.com/explore/${noteId}`);
+  if (fullUrl && !urls.includes(fullUrl)) urls.push(fullUrl);
   if (!urls.includes(originalUrl)) urls.push(originalUrl);
+  if (noteId) {
+    const canon = `https://www.xiaohongshu.com/explore/${noteId}`;
+    if (!urls.includes(canon)) urls.push(canon);
+  }
   for (const u of urls) {
     try {
       return await tryDownload('', u);
