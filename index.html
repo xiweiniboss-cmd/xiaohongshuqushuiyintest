@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<title>小红书无水印解析</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin: 0; font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+         background: #f7f7f8; color: #222; }
+  .wrap { max-width: 640px; margin: 0 auto; padding: 16px 14px 60px; }
+  header { text-align: center; padding: 18px 0 6px; }
+  header h1 { font-size: 22px; margin: 0 0 6px; }
+  header h1 .red { color: #ff2442; }
+  header p { color: #888; font-size: 13px; margin: 0; }
+  .card { background: #fff; border-radius: 14px; padding: 14px; margin-top: 14px;
+          box-shadow: 0 2px 10px rgba(0,0,0,.05); }
+  textarea { width: 100%; min-height: 84px; border: 1.5px solid #e5e5e5; border-radius: 10px;
+             padding: 10px 12px; font-size: 14px; resize: vertical; outline: none; }
+  textarea:focus { border-color: #ff2442; }
+  .row { display: flex; gap: 10px; margin-top: 10px; }
+  button { border: none; border-radius: 10px; font-size: 15px; padding: 12px 0; cursor: pointer; }
+  .btn-primary { background: #ff2442; color: #fff; flex: 1; font-weight: 600; }
+  .btn-primary:active { background: #e01e3a; }
+  .btn-ghost { background: #f0f0f2; color: #333; padding: 12px 18px; }
+  .btn-primary:disabled { background: #ffb3bf; }
+  .hint { font-size: 12px; color: #999; margin-top: 8px; line-height: 1.6; }
+  #status { display: none; text-align: center; padding: 18px; color: #666; font-size: 14px; }
+  .spinner { width: 26px; height: 26px; border: 3px solid #ffd6dd; border-top-color: #ff2442;
+             border-radius: 50%; margin: 0 auto 10px; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #result { display: none; }
+  .badge { display: inline-block; font-size: 12px; color: #fff; background: #ff2442;
+           border-radius: 20px; padding: 3px 10px; margin-bottom: 8px; }
+  .badge.img { background: #7c6cf0; }
+  .note-title { font-size: 16px; font-weight: 600; line-height: 1.5; margin: 0 0 6px; }
+  .note-desc { font-size: 13px; color: #666; line-height: 1.6; display: -webkit-box;
+               -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  video.preview { width: 100%; border-radius: 10px; background: #000; margin-top: 10px; max-height: 60vh; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 10px; }
+  .thumb { position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: #eee; }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb .dl { position: absolute; right: 4px; bottom: 4px; background: rgba(0,0,0,.65); color: #fff;
+               font-size: 11px; border-radius: 6px; padding: 5px 8px; }
+  .actions { display: flex; gap: 10px; margin-top: 12px; }
+  .actions .btn-primary { font-size: 15px; }
+  .link-row { display: flex; gap: 8px; margin-top: 10px; }
+  .link-row .btn-ghost { flex: 1; font-size: 13px; padding: 10px 0; }
+  /* 底部下载提示框 */
+  #sheetWrap { display: none; position: fixed; inset: 0; z-index: 50; }
+  #sheetWrap.show { display: block; }
+  .backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+  .sheet { position: absolute; left: 0; right: 0; bottom: 0; background: #fff;
+           border-radius: 18px 18px 0 0; padding: 18px 18px calc(20px + env(safe-area-inset-bottom));
+           animation: up .25s ease; max-width: 640px; margin: 0 auto; }
+  @keyframes up { from { transform: translateY(60px); opacity: .5; } to { transform: none; opacity: 1; } }
+  .sheet h3 { margin: 0 0 6px; font-size: 17px; }
+  .sheet p { font-size: 13px; color: #666; line-height: 1.7; margin: 0 0 14px; }
+  .sheet .prog { font-size: 13px; color: #ff2442; margin-bottom: 12px; min-height: 18px; }
+  /* 图片灯箱 */
+  #lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.92); z-index: 60;
+              align-items: center; justify-content: center; flex-direction: column; }
+  #lightbox.show { display: flex; }
+  #lightbox img { max-width: 100%; max-height: 78vh; object-fit: contain; }
+  #lightbox .bar { display: flex; gap: 12px; margin-top: 16px; }
+  #lightbox .bar button { padding: 10px 26px; font-size: 14px; }
+  #lightbox .close { position: absolute; top: calc(14px + env(safe-area-inset-top)); right: 16px;
+                     color: #fff; font-size: 28px; background: none; padding: 4px 10px; }
+  #toast { position: fixed; left: 50%; bottom: 90px; transform: translateX(-50%); background: rgba(0,0,0,.8);
+           color: #fff; font-size: 13px; padding: 10px 16px; border-radius: 20px; z-index: 99;
+           display: none; max-width: 88vw; text-align: center; line-height: 1.5; }
+  footer { text-align: center; color: #aaa; font-size: 11px; margin-top: 26px; line-height: 1.8; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>小红书<span class="red">无水印</span>解析</h1>
+    <p>粘贴分享链接，一键保存无水印图片 / 视频</p>
+  </header>
+
+  <div class="card">
+    <textarea id="linkInput" placeholder="请粘贴小红书分享链接，例如：&#10;http://xhslink.com/a/xxxxx&#10;（小红书 App → 笔记右上角 ··· → 复制链接）"></textarea>
+    <div class="row">
+      <button class="btn-ghost" id="pasteBtn">一键粘贴</button>
+      <button class="btn-primary" id="parseBtn">解析</button>
+    </div>
+    <div class="hint">解析走服务器抓取页面直链，无需登录。图片为原图 / 无损 PNG，视频为页面直链（本身无水印）。</div>
+  </div>
+
+  <div class="card" id="status"><div class="spinner"></div><div id="statusText">正在解析，请稍候…</div></div>
+
+  <div class="card" id="result"></div>
+
+  <footer>仅供个人学习与收藏使用，请尊重原作者版权<br>请勿用于商用或跨平台搬运</footer>
+</div>
+
+<!-- 下载提示框 -->
+<div id="sheetWrap">
+  <div class="backdrop" id="sheetBackdrop"></div>
+  <div class="sheet">
+    <h3 id="sheetTitle">保存无水印文件</h3>
+    <p id="sheetDesc"></p>
+    <div class="prog" id="sheetProg"></div>
+    <div class="row">
+      <button class="btn-ghost" id="sheetCancel">取消</button>
+      <button class="btn-primary" id="sheetConfirm">开始下载</button>
+    </div>
+  </div>
+</div>
+
+<!-- 图片灯箱 -->
+<div id="lightbox">
+  <button class="close" id="lbClose">×</button>
+  <img id="lbImg" alt="预览">
+  <div class="bar">
+    <button class="btn-ghost" id="lbSave" style="background:#fff">保存这张</button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const mediaProxy = (url) => '/api/media?url=' + encodeURIComponent(url);
+let currentData = null;      // 解析结果
+let sheetAction = null;      // 提示框确认后的动作
+let lbIndex = -1;            // 灯箱当前图片序号
+
+function toast(msg, ms = 2600) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.style.display = 'block';
+  clearTimeout(t._timer);
+  t._timer = setTimeout(() => (t.style.display = 'none'), ms);
+}
+
+function cleanName(s) {
+  return String(s || 'xhs').replace(/[\\/:*?"<>|]/g, '_').trim().slice(0, 40) || 'xhs';
+}
+
+// ---------- 下载提示框 ----------
+function openSheet(title, desc, confirmText, action) {
+  $('sheetTitle').textContent = title;
+  $('sheetDesc').textContent = desc;
+  $('sheetProg').textContent = '';
+  $('sheetConfirm').textContent = confirmText || '开始下载';
+  $('sheetConfirm').disabled = false;
+  sheetAction = action;
+  $('sheetWrap').classList.add('show');
+}
+function closeSheet() {
+  $('sheetWrap').classList.remove('show');
+  sheetAction = null;
+}
+$('sheetBackdrop').onclick = closeSheet;
+$('sheetCancel').onclick = closeSheet;
+$('sheetConfirm').onclick = async () => {
+  if (!sheetAction) return;
+  $('sheetConfirm').disabled = true;
+  try {
+    await sheetAction();
+  } catch (e) {
+    toast('下载失败：' + (e.message || e));
+  }
+  closeSheet();
+};
+
+// ---------- 媒体获取：代理 -> blob；失败抛错由调用方兜底 ----------
+async function fetchBlob(url, onProgress) {
+  const r = await fetch(mediaProxy(url), { referrerPolicy: 'no-referrer' });
+  if (!r.ok) throw new Error('媒体加载失败(' + r.status + ')');
+  if (onProgress && r.body) {
+    const total = +r.headers.get('content-length') || 0;
+    const reader = r.body.getReader();
+    const chunks = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      if (total) onProgress(Math.round((received / total) * 100));
+    }
+    return new Blob(chunks, { type: r.headers.get('content-type') || 'application/octet-stream' });
+  }
+  return await r.blob();
+}
+
+// 调起 iOS 系统分享（可保存到相册 / 文件），不支持则抛错走兜底
+async function systemShare(files, title) {
+  if (navigator.canShare && navigator.canShare({ files })) {
+    await navigator.share({ files, title });
+    return true;
+  }
+  throw new Error('当前浏览器不支持系统分享');
+}
+
+// ---------- 单张图片 ----------
+async function downloadImage(img, idx, total) {
+  const name = cleanName(currentData.title) + '_' + (idx + 1) + '.png';
+  openSheet(
+    '保存无水印图片',
+    total > 1 ? `第 ${idx + 1} / ${total} 张 · 无损 PNG 原图` : '无损 PNG 原图，点击开始下载后会弹出系统分享，请选择"存储图片"。',
+    '开始下载',
+    async () => {
+      $('sheetProg').textContent = '正在获取图片…';
+      try {
+        const blob = await fetchBlob(img.url_png);
+        const file = new File([blob], name, { type: blob.type || 'image/png' });
+        await systemShare([file], currentData.title);
+        toast('已调起系统分享');
+      } catch (e) {
+        // 兜底：在新标签页打开原图，长按保存
+        window.open(img.url_png, '_blank');
+        toast('已在新页面打开图片，长按图片选择"存储到照片"', 3200);
+      }
+    }
+  );
+}
+
+// ---------- 全部图片 ----------
+async function downloadAllImages() {
+  const imgs = currentData.images;
+  openSheet(
+    '一键保存全部图片',
+    `共 ${imgs.length} 张无水印原图，将一次性调起系统分享，可全部存储到相册。`,
+    '开始下载',
+    async () => {
+      const files = [];
+      for (let i = 0; i < imgs.length; i++) {
+        $('sheetProg').textContent = `正在获取第 ${i + 1} / ${imgs.length} 张…`;
+        try {
+          const blob = await fetchBlob(imgs[i].url_png);
+          files.push(
+            new File([blob], cleanName(currentData.title) + '_' + (i + 1) + '.png', {
+              type: blob.type || 'image/png',
+            })
+          );
+        } catch (e) {
+          throw new Error(`第 ${i + 1} 张获取失败，已取消`);
+        }
+      }
+      $('sheetProg').textContent = '正在调起系统分享…';
+      try {
+        await systemShare(files, currentData.title);
+        toast('已调起系统分享');
+      } catch (e) {
+        window.open(imgs[0].url_png, '_blank');
+        toast('系统分享不可用，已打开第一张，长按保存，其余请逐张保存', 3400);
+      }
+    }
+  );
+}
+
+// ---------- 视频 ----------
+async function downloadVideo() {
+  const url = currentData.video_url;
+  const name = cleanName(currentData.title) + '.mp4';
+  openSheet(
+    '保存无水印视频',
+    '点击开始下载后会获取视频并弹出系统分享，请选择"存储视频"。若获取失败会自动在新页面打开视频。',
+    '开始下载',
+    async () => {
+      $('sheetProg').textContent = '正在获取视频…';
+      try {
+        const blob = await fetchBlob(url, (p) => {
+          $('sheetProg').textContent = '正在获取视频…' + p + '%';
+        });
+        const file = new File([blob], name, { type: 'video/mp4' });
+        await systemShare([file], currentData.title);
+        toast('已调起系统分享');
+      } catch (e) {
+        window.open(url, '_blank');
+        toast('已在新页面打开视频，点击分享按钮选择"存储视频"', 3400);
+      }
+    }
+  );
+}
+
+function copyText(t, msg) {
+  (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject())
+    .then(() => toast(msg || '已复制'))
+    .catch(() => {
+      const ta = document.createElement('textarea');
+      ta.value = t;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); toast(msg || '已复制'); }
+      catch { toast('复制失败，请手动复制'); }
+      ta.remove();
+    });
+}
+
+// ---------- 解析 ----------
+async function doParse() {
+  const text = $('linkInput').value.trim();
+  if (!text) { toast('请先粘贴小红书分享链接'); return; }
+  $('result').style.display = 'none';
+  $('status').style.display = 'block';
+  $('statusText').textContent = '正在解析，请稍候…';
+  $('parseBtn').disabled = true;
+  try {
+    const r = await fetch('/api/parse?url=' + encodeURIComponent(text));
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.error || '解析失败');
+    currentData = data;
+    renderResult(data);
+  } catch (e) {
+    toast('解析失败：' + (e.message || e), 3400);
+  } finally {
+    $('status').style.display = 'none';
+    $('parseBtn').disabled = false;
+  }
+}
+
+function esc(s) {
+  return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function renderResult(data) {
+  const box = $('result');
+  let html = '';
+  if (data.type === 'video') {
+    html += `<span class="badge">视频 · 无水印</span>
+      <p class="note-title">${esc(data.title)}</p>
+      ${data.desc ? `<p class="note-desc">${esc(data.desc)}</p>` : ''}
+      <video class="preview" id="vPreview" controls playsinline preload="metadata"
+             src="${mediaProxy(data.video_url)}"></video>
+      <div class="actions"><button class="btn-primary" id="dlVideoBtn">下载视频</button></div>
+      <div class="link-row">
+        <button class="btn-ghost" id="copyVLink">复制视频直链</button>
+        <button class="btn-ghost" id="openVLink">新页面打开</button>
+      </div>`;
+  } else {
+    const n = data.images.length;
+    html += `<span class="badge img">图文 · ${n} 张无水印</span>
+      <p class="note-title">${esc(data.title)}</p>
+      ${data.desc ? `<p class="note-desc">${esc(data.desc)}</p>` : ''}
+      <div class="grid" id="imgGrid">` +
+      data.images.map((img, i) =>
+        `<div class="thumb" data-i="${i}">
+           <img loading="lazy" src="${mediaProxy(img.url_webp)}" data-direct="${esc(img.url_webp)}" alt="图${i + 1}">
+           <button class="dl" data-i="${i}">保存</button>
+         </div>`).join('') +
+      `</div>
+      <div class="actions"><button class="btn-primary" id="dlAllBtn">一键保存全部 (${n}张)</button></div>`;
+  }
+  box.innerHTML = html;
+  box.style.display = 'block';
+  box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  if (data.type === 'video') {
+    // 代理播不了就回退直链
+    const v = $('vPreview');
+    v.addEventListener('error', function h() {
+      v.removeEventListener('error', h);
+      v.src = data.video_url;
+    });
+    $('dlVideoBtn').onclick = downloadVideo;
+    $('copyVLink').onclick = () => copyText(data.video_url, '视频直链已复制');
+    $('openVLink').onclick = () => window.open(data.video_url, '_blank');
+  } else {
+    // 缩略图代理失败回退直链
+    box.querySelectorAll('.thumb img').forEach((im) => {
+      im.addEventListener('error', function h() {
+        im.removeEventListener('error', h);
+        im.src = im.dataset.direct;
+      }, { once: true });
+      im.parentElement.addEventListener('click', (e) => {
+        const i = +e.currentTarget.dataset.i;
+        if (e.target.classList.contains('dl')) { downloadImage(data.images[i], i, n); }
+        else { openLightbox(i); }
+      });
+    });
+    $('dlAllBtn').onclick = downloadAllImages;
+  }
+}
+
+// ---------- 灯箱 ----------
+function openLightbox(i) {
+  lbIndex = i;
+  const img = currentData.images[i];
+  const el = $('lbImg');
+  el.src = mediaProxy(img.url_png);
+  el.onerror = () => { el.onerror = null; el.src = img.url_png; };
+  $('lightbox').classList.add('show');
+}
+$('lbClose').onclick = () => $('lightbox').classList.remove('show');
+$('lightbox').addEventListener('click', (e) => {
+  if (e.target.id === 'lightbox') $('lightbox').classList.remove('show');
+});
+$('lbSave').onclick = () => {
+  if (lbIndex >= 0) {
+    $('lightbox').classList.remove('show');
+    downloadImage(currentData.images[lbIndex], lbIndex, currentData.images.length);
+  }
+};
+
+$('parseBtn').onclick = doParse;
+$('pasteBtn').onclick = async () => {
+  try {
+    const t = await navigator.clipboard.readText();
+    if (t) { $('linkInput').value = t; toast('已粘贴'); }
+    else toast('剪贴板是空的');
+  } catch {
+    $('linkInput').focus();
+    toast('请手动粘贴（长按输入框）');
+  }
+};
+</script>
+</body>
+</html>
