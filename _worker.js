@@ -712,6 +712,7 @@ const siteName = (p) => {
     const h = new URL(p).hostname;
     if (h.includes('tiktok')) return 'TikTok站';
     if (h.includes('xiaohongshu')) return '小红书站';
+    if (h.includes('douyin')) return '抖音站';
     return h;
   } catch { return ''; }
 };
