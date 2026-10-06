@@ -375,25 +375,66 @@ async function handleDiag(request) {
 // 查看：GET /admin?key=你的管理密码
 
 async function handleFeedbackSubmit(request, env) {
-  if (!env.FEEDBACK_KV)
-    return json({ ok: false, error: '反馈功能暂未启用' }, 500);
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ ok: false, error: '请求格式错误' }, 400);
+  if (!env.FEEDBACK_KV) return json({ ok: false, error: '反馈功能暂未启用' }, 500);
+  const ct = request.headers.get('content-type') || '';
+  let message = '',
+    contact = '',
+    page = '',
+    files = [];
+  if (ct.includes('multipart/form-data')) {
+    let form;
+    try {
+      form = await request.formData();
+    } catch {
+      return json({ ok: false, error: '请求格式错误' }, 400);
+    }
+    message = String(form.get('message') || '').trim();
+    contact = String(form.get('contact') || '').trim().slice(0, 120);
+    page = String(form.get('page') || '').slice(0, 200);
+    files = form.getAll('files').filter((f) => f && typeof f !== 'string' && f.size > 0);
+  } else {
+    // 兼容 JSON 提交（无附件）
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ ok: false, error: '请求格式错误' }, 400);
+    }
+    message = String(body.message || '').trim();
+    contact = String(body.contact || '').trim().slice(0, 120);
+    page = String(body.page || '').slice(0, 200);
   }
-  const message = String(body.message || '').trim();
-  const contact = String(body.contact || '').trim().slice(0, 120);
   if (!message) return json({ ok: false, error: '请填写反馈内容' }, 400);
   if (message.length > 2000) return json({ ok: false, error: '内容太长，请精简到 2000 字以内' }, 400);
-  const id =
-    'fb_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  if (files.length > 3) return json({ ok: false, error: '最多上传 3 个附件' }, 400);
+
+  const id = 'fb_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  const attachments = [];
+  if (files.length) {
+    if (!env.FEEDBACK_BUCKET) return json({ ok: false, error: '附件功能暂未启用' }, 500);
+    for (const f of files) {
+      const type = f.type || '';
+      if (!/^(image|video)\//.test(type))
+        return json({ ok: false, error: '只支持图片和视频附件' }, 400);
+      if (f.size > 20 * 1024 * 1024)
+        return json({ ok: false, error: '单个附件不能超过 20MB' }, 400);
+      const ext =
+        (String(f.name || '').split('.').pop() || 'bin').replace(/[^a-z0-9]/gi, '').slice(0, 8) ||
+        'bin';
+      const key = `fb/${id}/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+      await env.FEEDBACK_BUCKET.put(key, f.stream(), {
+        httpMetadata: { contentType: type },
+      });
+      attachments.push({ key, type, name: String(f.name || '').slice(0, 80), size: f.size });
+    }
+  }
+
   const record = {
     id,
     message: message.slice(0, 2000),
     contact,
-    page: String(body.page || '').slice(0, 200),
+    page,
+    attachments,
     ua: (request.headers.get('user-agent') || '').slice(0, 200),
     ip: request.headers.get('cf-connecting-ip') || '',
     time: new Date().toISOString(),
@@ -431,8 +472,42 @@ async function handleFeedbackDelete(request, env) {
   if (!env.FEEDBACK_KV) return json({ ok: false, error: '未绑定 KV' }, 500);
   const id = url.searchParams.get('id') || '';
   if (!/^fb_[a-z0-9_]+$/i.test(id)) return json({ ok: false, error: '参数错误' }, 400);
+  // 先读记录，把附件从 R2 一并删掉
+  try {
+    const v = await env.FEEDBACK_KV.get(id);
+    if (v) {
+      const rec = JSON.parse(v);
+      if (env.FEEDBACK_BUCKET && Array.isArray(rec.attachments)) {
+        for (const a of rec.attachments) {
+          try {
+            await env.FEEDBACK_BUCKET.delete(a.key);
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    }
+  } catch {
+    /* ignore */
+  }
   await env.FEEDBACK_KV.delete(id);
   return json({ ok: true });
+}
+
+// 管理后台查看附件（key 鉴权）：/api/fb-file/<key>?key=管理密码
+async function handleFeedbackFile(request, env) {
+  const url = new URL(request.url);
+  if (!checkAdminKey(url, env)) return new Response('无权访问', { status: 403 });
+  if (!env.FEEDBACK_BUCKET) return new Response('未绑定存储', { status: 500 });
+  const m = url.pathname.match(/^\/api\/fb-file\/(.+)$/);
+  const key = m ? decodeURIComponent(m[1]) : '';
+  if (!key.startsWith('fb/') || key.includes('..')) return new Response('参数错误', { status: 400 });
+  const obj = await env.FEEDBACK_BUCKET.get(key);
+  if (!obj) return new Response('文件不存在', { status: 404 });
+  const headers = new Headers();
+  obj.writeHttpMetadata(headers);
+  headers.set('Cache-Control', 'private, max-age=3600');
+  return new Response(obj.body, { headers });
 }
 
 const ADMIN_HTML = `<!DOCTYPE html>
@@ -470,6 +545,18 @@ async function load() {
       const t = new Date(it.time).toLocaleString('zh-CN', { hour12: false });
       d.innerHTML = '<div class="meta">' + esc(t) + (it.contact ? ' · ' + esc(it.contact) : '') + '</div>' +
         '<div class="msg">' + esc(it.message) + '</div>';
+      if (it.attachments && it.attachments.length) {
+        const att = document.createElement('div');
+        for (const a of it.attachments) {
+          const src = '/api/fb-file/' + encodeURIComponent(a.key) + '?key=' + encodeURIComponent(key);
+          if (String(a.type || '').startsWith('image/')) {
+            att.innerHTML += '<img src="' + src + '" style="max-width:100%;border-radius:8px;margin-top:8px;display:block" loading="lazy">';
+          } else {
+            att.innerHTML += '<video src="' + src + '" controls playsinline style="max-width:100%;border-radius:8px;margin-top:8px;display:block"></video>';
+          }
+        }
+        d.appendChild(att);
+      }
       const btn = document.createElement('button');
       btn.textContent = '删除';
       btn.onclick = async () => {
@@ -498,6 +585,7 @@ export default {
       return json({ ok: false, error: '方法不支持' }, 405);
     }
     if (url.pathname === '/api/feedback/list') return handleFeedbackList(request, env);
+    if (url.pathname.startsWith('/api/fb-file/')) return handleFeedbackFile(request, env);
     if (url.pathname === '/admin') {
       if (!checkAdminKey(url, env))
         return new Response('无权访问：在地址后加上 ?key=你的管理密码，例如 /admin?key=xxx', {

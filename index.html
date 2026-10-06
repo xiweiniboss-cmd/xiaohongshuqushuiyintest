@@ -141,6 +141,10 @@
     <p>遇到解析失败、下载不了等问题？描述一下，我会尽快处理。</p>
     <textarea id="fbMsg" placeholder="请描述你遇到的问题（比如：哪条链接解析失败、报了什么错）" style="min-height:100px"></textarea>
     <input id="fbContact" placeholder="联系方式（可选，方便回复你）" maxlength="120">
+    <label for="fbFiles" style="display:block;margin-top:10px;font-size:13px;color:#666">
+      📎 添加截图/录屏（可选，最多3个，单个≤20MB）
+    </label>
+    <input type="file" id="fbFiles" accept="image/*,video/*" multiple style="margin-top:6px">
     <div class="row">
       <button class="btn-ghost" id="fbCancel">取消</button>
       <button class="btn-primary" id="fbSubmit">提交反馈</button>
@@ -458,20 +462,28 @@ $('fbCancel').onclick = () => $('fbWrap').classList.remove('show');
 $('fbSubmit').onclick = async () => {
   const msg = $('fbMsg').value.trim();
   if (!msg) { toast('请先填写反馈内容'); return; }
+  const files = Array.from($('fbFiles').files || []);
+  if (files.length > 3) { toast('最多上传 3 个附件'); return; }
+  for (const f of files) {
+    if (!/^(image|video)\//.test(f.type || '')) { toast('只支持图片和视频附件'); return; }
+    if (f.size > 20 * 1024 * 1024) { toast('单个附件不能超过 20MB'); return; }
+  }
   const btn = $('fbSubmit');
   btn.disabled = true;
   btn.textContent = '提交中…';
   try {
-    const r = await fetch('/api/feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, contact: $('fbContact').value.trim(), page: location.href }),
-    });
+    const fd = new FormData();
+    fd.append('message', msg);
+    fd.append('contact', $('fbContact').value.trim());
+    fd.append('page', location.href);
+    for (const f of files) fd.append('files', f, f.name);
+    const r = await fetch('/api/feedback', { method: 'POST', body: fd });
     const j = await r.json();
     if (j.ok) {
       $('fbWrap').classList.remove('show');
       $('fbMsg').value = '';
       $('fbContact').value = '';
+      $('fbFiles').value = '';
       toast('反馈已提交，谢谢！');
     } else {
       toast('提交失败：' + (j.error || '请稍后重试'));
