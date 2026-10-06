@@ -158,6 +158,18 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+// 设备ID（防换IP刷次数）：首次访问生成，存 localStorage
+var deviceId = (function(){
+  try {
+    var id = localStorage.getItem('device_id');
+    if (!id) {
+      id = 'd' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+      localStorage.setItem('device_id', id);
+    }
+    return id;
+  } catch(e){ return ''; }
+})();
+
 const mediaProxy = (url) => '/api/media?url=' + encodeURIComponent(url);
 let currentData = null;      // 解析结果
 let sheetAction = null;      // 提示框确认后的动作
@@ -343,6 +355,7 @@ async function doParse() {
   $('parseBtn').disabled = true;
   try {
     let apiUrl = '/api/parse?url=' + encodeURIComponent(text);
+    if (deviceId) apiUrl += '&deviceId=' + encodeURIComponent(deviceId);
     if (tsToken) apiUrl += '&turnstile=' + encodeURIComponent(tsToken);
     const r = await fetch(apiUrl);
     const ct = r.headers.get('content-type') || '';
@@ -560,7 +573,7 @@ $('fbSubmit').onclick = async () => {
 function refreshQuota(){
   var el = document.getElementById('quotaCount');
   if (!el) return;
-  fetch('/api/parse-quota').then(function(r){ return r.json(); }).then(function(j){
+  fetch('/api/parse-quota?deviceId=' + encodeURIComponent(deviceId)).then(function(r){ return r.json(); }).then(function(j){
     if (j && j.ok && typeof j.remaining === 'number') el.textContent = j.remaining;
   }).catch(function(){});
 }
