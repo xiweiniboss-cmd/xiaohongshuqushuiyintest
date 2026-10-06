@@ -208,29 +208,46 @@ async function resolveNoteId(shareText) {
 async function parseShareViaRedFox(shareText, apiKey) {
   const originalUrl = extractFirstUrl(shareText); // 先校验链接有效性，避免无效输入浪费计费调用
   const errors = [];
-
-  // 路线一：通用无水印下载接口，短链/长链直传（RedFox 自己处理跳转，不经过我们被封的 IP）
-  try {
-    const data = await redfoxPost('/story/api/parseWork/parse', apiKey, { url: originalUrl });
+  const tryDownload = async (label, url) => {
+    const data = await redfoxPost('/story/api/parseWork/videoDownload/xhs', apiKey, { url });
     const title = cleanTitle(data.title || data.desc, 'xhs_note');
     const desc = String(data.desc || data.content || data.title || '');
     const vurl = extractVideoUrl(data);
-    if (vurl) return { type: 'video', note_id: extractNoteId(originalUrl) || '', title, desc, video_url: vurl };
+    if (vurl)
+      return { type: 'video', note_id: extractNoteId(url) || '', title, desc, video_url: vurl };
     const images = extractImages(data);
-    if (images.length) return { type: 'image', note_id: extractNoteId(originalUrl) || '', title, desc, images };
-    errors.push('下载接口未返回媒体地址');
-  } catch (e) {
-    // 鉴权/余额/限流问题直接抛，不再浪费计费调用
-    if (/API Key|鉴权|余额|频繁/.test(e.message)) throw e;
-    errors.push('下载接口：' + e.message);
+    if (images.length)
+      return { type: 'image', note_id: extractNoteId(url) || '', title, desc, images };
+    throw new Error(label + '未返回媒体地址');
+  };
+  const isBillable = (e) => /API Key|鉴权|余额|频繁/.test(e.message);
+
+  // 先免费拿 noteId（只看跳转第一跳，不走到登录页）
+  let noteId = extractNoteId(originalUrl);
+  if (!noteId) {
+    try {
+      noteId = (await resolveNoteId(shareText)).noteId;
+    } catch {
+      /* ignore */
+    }
   }
 
-  // 路线二：跳转链里找 noteId → 笔记详情接口
-  try {
-    const { noteId } = await resolveNoteId(shareText);
-    if (!noteId) {
-      errors.push('未能从链接中识别笔记 ID');
-    } else {
+  // 路线一：小红书专用下载接口。优先用标准 explore 链接（平台识别最稳），再试原始短链
+  const urls = [];
+  if (noteId) urls.push(`https://www.xiaohongshu.com/explore/${noteId}`);
+  if (!urls.includes(originalUrl)) urls.push(originalUrl);
+  for (const u of urls) {
+    try {
+      return await tryDownload('', u);
+    } catch (e) {
+      if (isBillable(e)) throw e; // 鉴权/余额/限流直接抛，不再浪费调用
+      errors.push('下载接口：' + e.message);
+    }
+  }
+
+  // 路线二：笔记详情接口（优质库）
+  if (noteId) {
+    try {
       const data = await redfoxPost('/story/api/xhsUser/queryWorkDetail', apiKey, { workId: noteId });
       const title = cleanTitle(data.title || data.desc, 'xhs_' + noteId);
       const desc = String(data.desc || data.content || data.title || '');
@@ -239,10 +256,12 @@ async function parseShareViaRedFox(shareText, apiKey) {
       const images = extractImages(data);
       if (images.length) return { type: 'image', note_id: noteId, title, desc, images };
       errors.push('笔记详情未返回媒体地址');
+    } catch (e) {
+      if (isBillable(e)) throw e;
+      errors.push('笔记详情：' + e.message);
     }
-  } catch (e) {
-    if (/API Key|鉴权|余额|频繁/.test(e.message)) throw e;
-    errors.push('笔记详情：' + e.message);
+  } else {
+    errors.push('未能从链接中识别笔记 ID');
   }
 
   throw new Error(errors.join('；') || '解析失败（笔记可能已删除或设为私密）');
