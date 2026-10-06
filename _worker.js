@@ -413,6 +413,13 @@ async function handleParse(request, env) {
       await env.FEEDBACK_KV.put('pcool_' + parseIp, String(Date.now()), {
         expirationTtl: PARSE_COOLDOWN_SECS,
       });
+    // 本站解析次数统计（仅成功计数）
+    if (env.FEEDBACK_KV) {
+      try {
+        const cur = Number((await env.FEEDBACK_KV.get('stats_parse_xhs')) || 0);
+        await env.FEEDBACK_KV.put('stats_parse_xhs', String(cur + 1));
+      } catch {}
+    }
     return json({ ok: true, ...result });
   } catch (e) {
     const out = { ok: false, error: e.message || '解析失败，请稍后重试' };
@@ -766,6 +773,16 @@ export default {
     // Turnstile 公开 site key 下发（site key 本就是公开的，前端渲染验证组件用）
     if (url.pathname === '/api/turnstile-key')
       return json({ ok: true, siteKey: (env.TURNSTILE_SITE_KEY || '').trim() });
+    // 本站解析次数
+    if (url.pathname === '/api/stats') {
+      let n = 0;
+      if (env.FEEDBACK_KV) {
+        try {
+          n = Number((await env.FEEDBACK_KV.get('stats_parse_xhs')) || 0);
+        } catch {}
+      }
+      return json({ ok: true, parseCount: n });
+    }
     if (url.pathname.startsWith('/api/fb-file/')) return handleFeedbackFile(request, env);
     if (url.pathname === '/admin') {
       if (!checkAdminKey(url, env))
