@@ -368,6 +368,123 @@ async function handleDiag(request) {
   }
 }
 
+/* ================= 反馈系统（KV 存储 + 管理后台） ================= */
+// 需要：Pages → Settings → Bindings 添加 KV 命名空间，变量名 FEEDBACK_KV；
+// 环境变量 FEEDBACK_ADMIN_KEY 设为你的管理密码。
+// 提交：POST /api/feedback {message, contact?, page?}
+// 查看：GET /admin?key=你的管理密码
+
+async function handleFeedbackSubmit(request, env) {
+  if (!env.FEEDBACK_KV)
+    return json({ ok: false, error: '反馈功能暂未启用' }, 500);
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: '请求格式错误' }, 400);
+  }
+  const message = String(body.message || '').trim();
+  const contact = String(body.contact || '').trim().slice(0, 120);
+  if (!message) return json({ ok: false, error: '请填写反馈内容' }, 400);
+  if (message.length > 2000) return json({ ok: false, error: '内容太长，请精简到 2000 字以内' }, 400);
+  const id =
+    'fb_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
+  const record = {
+    id,
+    message: message.slice(0, 2000),
+    contact,
+    page: String(body.page || '').slice(0, 200),
+    ua: (request.headers.get('user-agent') || '').slice(0, 200),
+    ip: request.headers.get('cf-connecting-ip') || '',
+    time: new Date().toISOString(),
+  };
+  await env.FEEDBACK_KV.put(id, JSON.stringify(record));
+  return json({ ok: true });
+}
+
+function checkAdminKey(url, env) {
+  const key = env.FEEDBACK_ADMIN_KEY || '';
+  return !!key && url.searchParams.get('key') === key;
+}
+
+async function handleFeedbackList(request, env) {
+  const url = new URL(request.url);
+  if (!checkAdminKey(url, env)) return json({ ok: false, error: '无权访问' }, 403);
+  if (!env.FEEDBACK_KV) return json({ ok: false, error: '未绑定 KV' }, 500);
+  const listed = await env.FEEDBACK_KV.list({ prefix: 'fb_' });
+  const items = [];
+  for (const k of listed.keys) {
+    try {
+      const v = await env.FEEDBACK_KV.get(k.name);
+      if (v) items.push(JSON.parse(v));
+    } catch {
+      /* ignore */
+    }
+  }
+  items.sort((a, b) => String(b.time || '').localeCompare(String(a.time || '')));
+  return json({ ok: true, count: items.length, items });
+}
+
+async function handleFeedbackDelete(request, env) {
+  const url = new URL(request.url);
+  if (!checkAdminKey(url, env)) return json({ ok: false, error: '无权访问' }, 403);
+  if (!env.FEEDBACK_KV) return json({ ok: false, error: '未绑定 KV' }, 500);
+  const id = url.searchParams.get('id') || '';
+  if (!/^fb_[a-z0-9_]+$/i.test(id)) return json({ ok: false, error: '参数错误' }, 400);
+  await env.FEEDBACK_KV.delete(id);
+  return json({ ok: true });
+}
+
+const ADMIN_HTML = `<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>反馈管理</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:-apple-system,"PingFang SC",sans-serif;background:#f7f7f8;color:#222}
+.wrap{max-width:640px;margin:0 auto;padding:16px 14px 60px}
+h1{font-size:20px;margin:8px 0 4px}h1 span{font-size:13px;color:#888;font-weight:400}
+.fb{background:#fff;border-radius:12px;padding:12px 14px;margin-top:12px;box-shadow:0 2px 8px rgba(0,0,0,.05)}
+.fb .meta{font-size:12px;color:#999;margin-bottom:6px}
+.fb .msg{font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word}
+.fb button{margin-top:8px;background:#f0f0f2;border:none;border-radius:8px;padding:8px 16px;font-size:13px;color:#c00}
+.empty{text-align:center;color:#aaa;margin-top:40px;font-size:14px}
+</style></head>
+<body><div class="wrap">
+<h1>用户反馈 <span id="count"></span></h1>
+<div id="list">加载中…</div>
+</div><script>
+const key = new URLSearchParams(location.search).get('key') || '';
+const esc = (s) => String(s || '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+async function load() {
+  const box = document.getElementById('list');
+  try {
+    const r = await fetch('/api/feedback/list?key=' + encodeURIComponent(key));
+    const j = await r.json();
+    if (!j.ok) { box.innerHTML = '<div class="empty">加载失败：' + esc(j.error) + '</div>'; return; }
+    document.getElementById('count').textContent = '共 ' + j.count + ' 条';
+    if (!j.items.length) { box.innerHTML = '<div class="empty">暂无反馈</div>'; return; }
+    box.innerHTML = '';
+    for (const it of j.items) {
+      const d = document.createElement('div');
+      d.className = 'fb';
+      const t = new Date(it.time).toLocaleString('zh-CN', { hour12: false });
+      d.innerHTML = '<div class="meta">' + esc(t) + (it.contact ? ' · ' + esc(it.contact) : '') + '</div>' +
+        '<div class="msg">' + esc(it.message) + '</div>';
+      const btn = document.createElement('button');
+      btn.textContent = '删除';
+      btn.onclick = async () => {
+        if (!confirm('删除这条反馈？')) return;
+        await fetch('/api/feedback?id=' + encodeURIComponent(it.id) + '&key=' + encodeURIComponent(key), { method: 'DELETE' });
+        load();
+      };
+      d.appendChild(btn);
+      box.appendChild(d);
+    }
+  } catch (e) { box.innerHTML = '<div class="empty">网络错误</div>'; }
+}
+load();
+<\/script></body></html>`;
+
 /* ================= 路由 ================= */
 export default {
   async fetch(request, env) {
@@ -375,6 +492,22 @@ export default {
     if (url.pathname === '/api/parse') return handleParse(request, env);
     if (url.pathname === '/api/media') return handleMedia(request);
     if (url.pathname === '/api/diag') return handleDiag(request);
+    if (url.pathname === '/api/feedback') {
+      if (request.method === 'POST') return handleFeedbackSubmit(request, env);
+      if (request.method === 'DELETE') return handleFeedbackDelete(request, env);
+      return json({ ok: false, error: '方法不支持' }, 405);
+    }
+    if (url.pathname === '/api/feedback/list') return handleFeedbackList(request, env);
+    if (url.pathname === '/admin') {
+      if (!checkAdminKey(url, env))
+        return new Response('无权访问：在地址后加上 ?key=你的管理密码，例如 /admin?key=xxx', {
+          status: 403,
+          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+        });
+      return new Response(ADMIN_HTML, {
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      });
+    }
     return env.ASSETS.fetch(request);
   },
 };

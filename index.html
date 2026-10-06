@@ -71,6 +71,17 @@
            color: #fff; font-size: 13px; padding: 10px 16px; border-radius: 20px; z-index: 99;
            display: none; max-width: 88vw; text-align: center; line-height: 1.5; }
   footer { text-align: center; color: #aaa; font-size: 11px; margin-top: 26px; line-height: 1.8; }
+  /* 反馈悬浮按钮 + 表单 */
+  #fbBtn { position: fixed; right: 16px; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 40;
+           width: 52px; height: 52px; border-radius: 50%; background: #ff2442; color: #fff;
+           font-size: 22px; box-shadow: 0 4px 14px rgba(255,36,66,.4); padding: 0; }
+  #fbBtn:active { transform: scale(.94); }
+  #fbWrap { display: none; position: fixed; inset: 0; z-index: 50; }
+  #fbWrap.show { display: block; }
+  #fbWrap .sheet input { width: 100%; border: 1.5px solid #e5e5e5; border-radius: 10px;
+                         padding: 10px 12px; font-size: 14px; outline: none; margin-top: 10px; }
+  #fbWrap .sheet input:focus { border-color: #ff2442; }
+  #fbWrap .sheet .row { margin-top: 14px; }
 </style>
 </head>
 <body>
@@ -120,6 +131,22 @@
 </div>
 
 <div id="toast"></div>
+
+<!-- 反馈 -->
+<button id="fbBtn" title="问题反馈">💬</button>
+<div id="fbWrap">
+  <div class="backdrop" id="fbBackdrop"></div>
+  <div class="sheet">
+    <h3>问题反馈</h3>
+    <p>遇到解析失败、下载不了等问题？描述一下，我会尽快处理。</p>
+    <textarea id="fbMsg" placeholder="请描述你遇到的问题（比如：哪条链接解析失败、报了什么错）" style="min-height:100px"></textarea>
+    <input id="fbContact" placeholder="联系方式（可选，方便回复你）" maxlength="120">
+    <div class="row">
+      <button class="btn-ghost" id="fbCancel">取消</button>
+      <button class="btn-primary" id="fbSubmit">提交反馈</button>
+    </div>
+  </div>
+</div>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -422,6 +449,38 @@ $('pasteBtn').onclick = async () => {
     $('linkInput').focus();
     toast('请手动粘贴（长按输入框）');
   }
+};
+
+/* 反馈表单 */
+$('fbBtn').onclick = () => $('fbWrap').classList.add('show');
+$('fbBackdrop').onclick = () => $('fbWrap').classList.remove('show');
+$('fbCancel').onclick = () => $('fbWrap').classList.remove('show');
+$('fbSubmit').onclick = async () => {
+  const msg = $('fbMsg').value.trim();
+  if (!msg) { toast('请先填写反馈内容'); return; }
+  const btn = $('fbSubmit');
+  btn.disabled = true;
+  btn.textContent = '提交中…';
+  try {
+    const r = await fetch('/api/feedback', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg, contact: $('fbContact').value.trim(), page: location.href }),
+    });
+    const j = await r.json();
+    if (j.ok) {
+      $('fbWrap').classList.remove('show');
+      $('fbMsg').value = '';
+      $('fbContact').value = '';
+      toast('反馈已提交，谢谢！');
+    } else {
+      toast('提交失败：' + (j.error || '请稍后重试'));
+    }
+  } catch {
+    toast('网络错误，请稍后重试');
+  }
+  btn.disabled = false;
+  btn.textContent = '提交反馈';
 };
 </script>
 </body>
