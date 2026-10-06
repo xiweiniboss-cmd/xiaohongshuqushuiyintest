@@ -89,10 +89,18 @@ async function tikhubCall(endpoint, shareText, token) {
     } catch {
       throw new Error('TikHub 返回了非 JSON 数据（HTTP ' + resp.status + '）');
     }
-    if (resp.status === 401 || resp.status === 403)
+    if (resp.status === 401 || resp.status === 403) {
+      let detail = '';
+      try {
+        const t = await resp.text();
+        try { const j = JSON.parse(t); detail = j.message || j.msg || j.error || ''; }
+        catch { detail = t.slice(0, 120); }
+      } catch { /* ignore */ }
       throw new Error(
-        'TikHub Token 无效或未激活，请检查：① TikHub 账号是否已完成邮箱验证 ② token 是否在用户中心「API token」菜单创建 ③ 环境变量 TIKHUB_TOKEN 的值是否复制完整、前后无空格；修改后需重新部署'
+        'TikHub 拒绝了 Token（HTTP ' + resp.status + '）' + (detail ? '：' + detail : '') +
+        '。请检查：① TikHub 账号邮箱是否已验证 ② token 是否在用户中心「API token」创建且状态可用 ③ 值是否复制完整；仍不行请删除重建一个新 token 后更新环境变量并重新部署'
       );
+    }
     if (resp.status === 402)
       throw new Error('TikHub 余额不足，请前往 TikHub 后台充值后再试');
     if (resp.status === 429) throw new Error('TikHub 请求太频繁，请稍后重试');
@@ -240,7 +248,8 @@ async function parseShareViaTikHub(shareText, token) {
 
 async function handleParse(request, env) {
   try {
-    const token = (env.TIKHUB_TOKEN || env.TIKHUB_API_KEY || env.TIKHUB || '').trim();
+    let token = (env.TIKHUB_TOKEN || env.TIKHUB_API_KEY || env.TIKHUB || '').trim();
+    token = token.replace(/^bearer\s+/i, ''); // 防止用户把 "Bearer xxx" 整个复制进来
     if (!token) {
       return json(
         {
