@@ -534,6 +534,21 @@ async function handleFeedbackSubmit(request, env) {
     if (!ok) return json({ ok: false, error: '人机验证未通过，请重试' }, 403);
   }
 
+  // 提交冷却：同一 IP 10 分钟内只能提交一次（KV 自动过期）
+  const COOLDOWN_SECS = 600;
+  const clientIp = request.headers.get('cf-connecting-ip') || '';
+  if (clientIp) {
+    const lastTs = await env.FEEDBACK_KV.get('cool_' + clientIp);
+    if (lastTs) {
+      const remain = COOLDOWN_SECS - Math.floor((Date.now() - Number(lastTs)) / 1000);
+      if (remain > 0)
+        return json(
+          { ok: false, error: `提交太频繁，请 ${Math.max(1, Math.ceil(remain / 60))} 分钟后再试` },
+          429
+        );
+    }
+  }
+
   const id = 'fb_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8);
   const attachments = [];
   if (files.length) {
@@ -566,6 +581,11 @@ async function handleFeedbackSubmit(request, env) {
     time: new Date().toISOString(),
   };
   await env.FEEDBACK_KV.put(id, JSON.stringify(record));
+  // 写入冷却时间戳（10 分钟后自动过期；键前缀 cool_ 不与 fb_ 反馈键冲突）
+  if (clientIp)
+    await env.FEEDBACK_KV.put('cool_' + clientIp, String(Date.now()), {
+      expirationTtl: COOLDOWN_SECS,
+    });
   return json({ ok: true });
 }
 
