@@ -1,6 +1,7 @@
-// Cloudflare Pages 单文件 Worker：接管 /api/* 路由，其余请求走静态资源
-// 用法：把本文件放到仓库根目录（与 index.html 同级），删除根目录下散落的 parse.js / media.js / diag.js
-// 效果等同于 functions/api/parse.js + media.js + diag.js，适合无法上传文件夹的场景
+// Cloudflare Pages 单文件 Worker（TikHub 版）
+// 小红书已封锁数据中心 IP 的匿名抓取，解析改走 TikHub API
+// 需要环境变量 TIKHUB_TOKEN（去 user.tikhub.io 注册并创建 token，填到 Pages → Settings → Environment variables）
+// 部署：本文件放仓库根目录（与 index.html 同级）
 
 /* ================= 公共 ================= */
 function json(data, status = 200) {
@@ -16,54 +17,15 @@ function json(data, status = 200) {
 
 const UA_PC =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36';
-const UA_IPHONE =
-  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 
-const HEADERS_PC = {
-  'User-Agent': UA_PC,
-  Accept:
-    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'Accept-Language': 'zh-CN,zh;q=0.9',
-  Referer: 'https://www.xiaohongshu.com/',
-};
-const HEADERS_MOBILE = {
-  'User-Agent': UA_IPHONE,
-  Accept:
-    'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-  'Accept-Language': 'zh-CN,zh;q=0.9',
-  Referer: 'https://www.xiaohongshu.com/',
-};
+const TIKHUB_BASE = 'https://api.tikhub.io';
+const EP_VIDEO = '/api/v1/xiaohongshu/app_v2/get_video_note_detail';
+const EP_IMAGE = '/api/v1/xiaohongshu/app_v2/get_image_note_detail';
 
-/* ================= /api/parse ================= */
 function extractFirstUrl(text) {
   const m = String(text || '').match(/https?:\/\/[^\s"'<>\\]+/);
   if (!m) throw new Error('没有找到有效的小红书链接，请粘贴完整的分享链接');
   return m[0].replace(/[),.;!?\]}>»」』】，。；：？！）】]+$/, '');
-}
-function extractNoteId(url) {
-  const m = String(url || '').match(/\/(?:explore|discovery\/item)\/([a-z0-9]+)/i);
-  return m ? m[1] : null;
-}
-async function fetchHtml(url, headers, timeoutMs = 12000) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-  try {
-    const resp = await fetch(url, { headers, redirect: 'follow', signal: ctrl.signal });
-    const html = await resp.text();
-    return { status: resp.status, finalUrl: resp.url, html };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-function extractInitialState(html) {
-  const m = html.match(/window\.__INITIAL_STATE__=(.*?)<\/script>/s);
-  if (!m) return null;
-  const jsonStr = m[1].replace(/:\s*undefined\s*([,}])/g, ':null$1');
-  try {
-    return JSON.parse(jsonStr);
-  } catch {
-    return null;
-  }
 }
 function normalizeUrl(u) {
   return String(u || '')
@@ -78,114 +40,6 @@ function normalizeUrl(u) {
 function ensureHttps(u) {
   return u.startsWith('http://') ? 'https://' + u.slice(7) : u;
 }
-function extractMeta(html, prop) {
-  const pats = [
-    new RegExp(`<meta[^>]+(?:name|property)=["']${prop}["'][^>]+content=["']([^"']+)["']`, 'i'),
-    new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']${prop}["']`, 'i'),
-  ];
-  for (const p of pats) {
-    const m = html.match(p);
-    if (m) return m[1];
-  }
-  return null;
-}
-function extractVideoSrcTags(html) {
-  const out = [];
-  const re = /<video[^>]+src=["']([^"']+)["']/gi;
-  let m;
-  while ((m = re.exec(html))) out.push(m[1]);
-  return out;
-}
-function isVideoUrl(u) {
-  return /\.(?:mp4|m3u8)(?:\?|$)/i.test(u || '');
-}
-function scoreCandidate(url, source) {
-  let s = 0;
-  if (source === 'video') s += 100;
-  else if (source === 'og') s += 90;
-  else if (source.startsWith('state_master')) s += 80;
-  else if (source.startsWith('state_backup')) s += 60;
-  else if (source === 'fallback') s += 40;
-  if (/h264/i.test(source)) s += 5;
-  if (url.startsWith('https://')) s += 10;
-  if (/(wm|watermark)/i.test(url)) s -= 40;
-  return s;
-}
-function collectVideoCandidates(html, state, noteId) {
-  const candidates = [];
-  for (const v of extractVideoSrcTags(html)) candidates.push([v, 'video']);
-  const ogv = extractMeta(html, 'og:video') || extractMeta(html, 'og:video:url');
-  if (ogv) candidates.push([ogv, 'og']);
-  try {
-    const noteMap = state?.note?.noteDetailMap || {};
-    const chosenId = noteId && noteMap[noteId] ? noteId : Object.keys(noteMap)[0];
-    const noteInfo = noteMap[chosenId]?.note || {};
-    const stream = noteInfo?.video?.media?.stream || {};
-    for (const [codec, items] of Object.entries(stream)) {
-      if (!Array.isArray(items)) continue;
-      items.forEach((item, idx) => {
-        if (!item || typeof item !== 'object') return;
-        if (item.masterUrl) candidates.push([item.masterUrl, `state_master_${codec}_${idx}`]);
-        (item.backupUrls || []).forEach((b, bi) =>
-          candidates.push([b, `state_backup_${codec}_${idx}_${bi}`])
-        );
-      });
-    }
-  } catch { /* ignore */ }
-  if (candidates.length === 0) {
-    const re = /https?:\/\/[^\s'"]+?\.(?:mp4|m3u8)(?:\?[^\s'"]*)?/gi;
-    let m;
-    while ((m = re.exec(html))) {
-      if (m[0].includes('xhscdn.com')) candidates.push([m[0], 'fallback']);
-    }
-  }
-  const seen = new Set();
-  const normalized = [];
-  for (const [url, source] of candidates) {
-    const u = ensureHttps(normalizeUrl(url));
-    if (!isVideoUrl(u) || seen.has(u)) continue;
-    seen.add(u);
-    normalized.push([u, source]);
-  }
-  return normalized;
-}
-function pickBestVideo(candidates) {
-  if (!candidates.length) throw new Error('未从页面中找到可用视频直链');
-  const sorted = [...candidates].sort(
-    (a, b) => scoreCandidate(b[0], b[1]) - scoreCandidate(a[0], a[1]) || a[0].length - b[0].length
-  );
-  return sorted[0][0];
-}
-function convertToPng(webpUrl) {
-  const m = String(webpUrl || '').match(/https?:\/\/[^/]*xhscdn\.com\/\d+\/[0-9a-z]+\/(\S+?)!/);
-  if (m) return `https://ci.xiaohongshu.com/${m[1]}?imageView2/format/png`;
-  return null;
-}
-function buildImages(noteInfo) {
-  const imageList = noteInfo?.imageList || [];
-  if (!imageList.length) throw new Error('笔记中没有找到图片');
-  const images = [];
-  for (const img of imageList) {
-    let webp = null;
-    for (const info of img.infoList || []) {
-      if (info.imageScene === 'WB_DFT') {
-        webp = info.url;
-        break;
-      }
-    }
-    if (!webp) webp = img.urlDefault;
-    if (!webp) continue;
-    webp = ensureHttps(normalizeUrl(webp));
-    images.push({
-      url_webp: webp,
-      url_png: convertToPng(webp) || webp,
-      width: img.width || null,
-      height: img.height || null,
-    });
-  }
-  if (!images.length) throw new Error('无法提取图片地址');
-  return images;
-}
 function cleanTitle(t, fallback) {
   return (
     String(t || fallback || 'xhs')
@@ -195,87 +49,225 @@ function cleanTitle(t, fallback) {
       .slice(0, 60) || fallback || 'xhs'
   );
 }
-async function parseShare(shareText) {
-  const shareUrl = extractFirstUrl(shareText);
-  let page = await fetchHtml(shareUrl, HEADERS_PC);
-  let hasState = page.html.includes('__INITIAL_STATE__');
-  if (page.status >= 500 || !page.html || !hasState) {
-    page = await fetchHtml(shareUrl, HEADERS_MOBILE);
-    hasState = page.html.includes('__INITIAL_STATE__');
+function isVideoUrl(u) {
+  return /\.(?:mp4|m3u8)(?:\?|$)/i.test(u || '');
+}
+// WebP CDN 链接 -> ci.xiaohongshu.com 无损 PNG
+function convertToPng(webpUrl) {
+  const m = String(webpUrl || '').match(/https?:\/\/[^/]*xhscdn\.com\/\d+\/[0-9a-z]+\/(\S+?)!/);
+  if (m) return `https://ci.xiaohongshu.com/${m[1]}?imageView2/format/png`;
+  return null;
+}
+// 递归收集对象中所有 URL 字符串（防御式提取，应对返回结构变化）
+function deepFindUrls(obj, out = [], seenObjs = new Set()) {
+  if (!obj || out.length > 200) return out;
+  if (typeof obj === 'string') {
+    if (/^https?:\/\/[^\s"'<>\\]+$/i.test(obj)) out.push(obj);
+    return out;
   }
-  if (page.status >= 400 && !page.html) {
-    throw new Error(`小红书返回异常状态（HTTP ${page.status}），请稍后重试`);
-  }
-  if (!hasState) {
-    throw new Error('小红书拒绝了这次访问（疑似风控拦截），请稍后重试或换个网络再试');
-  }
-  if (/\/404(?:[?#]|$)/.test(page.finalUrl || '')) {
-    throw new Error('该笔记不存在、已删除或设为私密，无法解析');
-  }
-  const noteId = extractNoteId(page.finalUrl) || extractNoteId(shareUrl);
-  const state = extractInitialState(page.html);
-  if (!state) throw new Error('页面数据提取失败，请稍后重试');
-  const noteMap = state?.note?.noteDetailMap || {};
-  if (!Object.keys(noteMap).length)
-    throw new Error('页面中没有笔记数据（笔记可能已删除、设为私密或被风控拦截）');
-  const chosenId = noteId && noteMap[noteId] ? noteId : Object.keys(noteMap)[0];
-  const noteInfo = noteMap[chosenId]?.note;
-  if (!noteInfo) throw new Error('笔记数据解析失败');
+  if (typeof obj !== 'object' || seenObjs.has(obj)) return out;
+  seenObjs.add(obj);
+  const arr = Array.isArray(obj) ? obj : Object.values(obj);
+  for (const v of arr) deepFindUrls(v, out, seenObjs);
+  return out;
+}
 
-  const title = cleanTitle(noteInfo.title, `xhs_${chosenId}`);
-  const desc = String(noteInfo.desc || '');
-  let shareType = '';
+/* ================= TikHub ================= */
+async function tikhubCall(endpoint, shareText, token) {
+  const url = TIKHUB_BASE + endpoint + '?share_text=' + encodeURIComponent(shareText);
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
   try {
-    shareType = (new URL(page.finalUrl).searchParams.get('type') || '').toLowerCase();
-  } catch { /* ignore */ }
-  const stream = noteInfo?.video?.media?.stream || {};
-  const hasStateVideo = Object.values(stream).some((v) => Array.isArray(v) && v.length);
-  const hasHtmlVideo =
-    !!(extractMeta(page.html, 'og:video') || extractMeta(page.html, 'og:video:url')) ||
-    extractVideoSrcTags(page.html).length > 0;
-  const hasImages = (noteInfo?.imageList?.length || 0) > 0;
-  const preferVideo = shareType === 'video' || (!shareType && (hasStateVideo || hasHtmlVideo));
-  const preferImage = shareType === 'normal' || (!preferVideo && hasImages);
+    const resp = await fetch(url, {
+      headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
+      signal: ctrl.signal,
+    });
+    const text = await resp.text();
+    let body = null;
+    try {
+      body = JSON.parse(text);
+    } catch {
+      throw new Error('TikHub 返回了非 JSON 数据（HTTP ' + resp.status + '）');
+    }
+    if (resp.status === 401 || resp.status === 403)
+      throw new Error('TikHub Token 无效或未激活，请检查环境变量 TIKHUB_TOKEN');
+    if (resp.status === 402)
+      throw new Error('TikHub 余额不足，请前往 TikHub 后台充值后再试');
+    if (resp.status === 429) throw new Error('TikHub 请求太频繁，请稍后重试');
+    if (!resp.ok)
+      throw new Error(
+        'TikHub 请求失败（HTTP ' + resp.status + '）：' + (body.message_zh || body.message || '')
+      );
+    if (body.code && body.code !== 200)
+      throw new Error('TikHub 接口报错：' + (body.message_zh || body.message || 'code=' + body.code));
+    return body;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 从 TikHub 返回中定位 note 对象（data.data[0].note_list[0]，带多种兜底）
+function tikhubNote(body) {
+  const d = body?.data;
+  const arr = Array.isArray(d?.data) ? d.data : Array.isArray(d) ? d : null;
+  const first = arr?.[0];
+  const note = first?.note_list?.[0] || first?.note || first;
+  if (!note || typeof note !== 'object') return null;
+  if (!note.id && !note.title && !note.desc) return null;
+  return note;
+}
+
+function pickImageUrl(item) {
+  if (typeof item === 'string') return item;
+  if (!item || typeof item !== 'object') return null;
+  return item.url || item.url_default || item.image_url || item.src || item.link || null;
+}
+
+function extractImages(note) {
+  const out = [];
+  const seen = new Set();
+  const push = (u) => {
+    if (typeof u !== 'string' || !u) return;
+    const h = ensureHttps(normalizeUrl(u));
+    if (!/^https?:\/\//i.test(h) || seen.has(h)) return;
+    seen.add(h);
+    out.push({ url_webp: h, url_png: convertToPng(h) || h, width: null, height: null });
+  };
+  for (const key of ['images_list', 'image_list', 'imageList', 'images']) {
+    const list = note[key];
+    if (Array.isArray(list)) for (const item of list) push(pickImageUrl(item));
+  }
+  if (!out.length) {
+    // 兜底：深搜图片 CDN 链接
+    for (const u of deepFindUrls(note)) {
+      if (/xhscdn\.com/i.test(u) && !isVideoUrl(u) && !/(avatar|watermark)/i.test(u)) push(u);
+    }
+  }
+  return out;
+}
+
+function extractVideoUrl(note) {
+  const candidates = [];
+  const push = (u) => {
+    if (typeof u !== 'string' || !u) return;
+    const h = ensureHttps(normalizeUrl(u));
+    if (isVideoUrl(h) && !candidates.includes(h)) candidates.push(h);
+  };
+  // 结构化字段优先
+  push(note.video_url);
+  push(note.video?.url);
+  push(note.video_info?.url);
+  push(note.media?.video_url);
+  push(note.video?.play_url);
+  // 兜底：深搜 mp4 链接
+  for (const u of deepFindUrls(note)) push(u);
+  if (!candidates.length) return null;
+  // 打分：https 优先，含 wm/watermark 的降权
+  const scored = candidates.map((u) => {
+    let s = 0;
+    if (u.startsWith('https://')) s += 10;
+    if (/(wm|watermark)/i.test(u)) s -= 40;
+    return [u, s];
+  });
+  scored.sort((a, b) => b[1] - a[1] || a[0].length - b[0].length);
+  return scored[0][0];
+}
+
+// 免费判断图文/视频类型：只跟随短链跳转读 type 参数，不调计费接口
+async function detectTypeHint(shareText) {
+  try {
+    let url = extractFirstUrl(shareText);
+    for (let i = 0; i < 5; i++) {
+      const r = await fetch(url, {
+        method: 'GET',
+        redirect: 'manual',
+        headers: { 'User-Agent': UA_PC, Referer: 'https://www.xiaohongshu.com/' },
+      });
+      const loc = r.headers.get('location');
+      if (!loc || r.status < 300 || r.status >= 400) break;
+      url = new URL(loc, url).href;
+    }
+    const t = (new URL(url).searchParams.get('type') || '').toLowerCase();
+    if (t === 'video') return 'video';
+    if (t === 'normal' || t === 'image') return 'image';
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
+async function parseShareViaTikHub(shareText, token) {
+  extractFirstUrl(shareText); // 先校验链接有效性，避免无效输入浪费计费调用
+  const hint = await detectTypeHint(shareText);
+  let first = EP_VIDEO,
+    second = EP_IMAGE;
+  if (hint === 'image') [first, second] = [second, first];
 
   const errors = [];
-  const tryVideo = () => {
-    const vTitle = cleanTitle(noteInfo.title || extractMeta(page.html, 'og:title'), `xhs_${chosenId}`);
-    const candidates = collectVideoCandidates(page.html, state, chosenId);
-    return { type: 'video', note_id: chosenId, title: vTitle, desc, video_url: pickBestVideo(candidates) };
-  };
-  const tryImage = () => ({
-    type: 'image', note_id: chosenId, title, desc, images: buildImages(noteInfo),
-  });
-  if (preferVideo) {
-    try { return tryVideo(); } catch (e) { errors.push(e.message); }
+  for (const ep of [first, second]) {
+    let body;
+    try {
+      body = await tikhubCall(ep, shareText, token);
+    } catch (e) {
+      // 鉴权/余额/限流问题直接抛，不再试另一个接口浪费计费
+      if (/Token|余额|频繁/.test(e.message)) throw e;
+      errors.push(e.message);
+      continue;
+    }
+    const note = tikhubNote(body);
+    if (!note) {
+      errors.push('TikHub 未返回笔记数据（笔记可能已删除或设为私密）');
+      continue;
+    }
+    const title = cleanTitle(note.title, 'xhs_' + (note.id || 'note'));
+    const desc = String(note.desc || note.content || '');
+    const noteId = String(note.id || note.note_id || '');
+    if (ep === EP_VIDEO) {
+      const vurl = extractVideoUrl(note);
+      if (vurl) return { type: 'video', note_id: noteId, title, desc, video_url: vurl };
+      errors.push('视频接口未返回视频地址，尝试图文接口');
+    } else {
+      const images = extractImages(note);
+      if (images.length)
+        return { type: 'image', note_id: noteId, title, desc, images };
+      errors.push('图文接口未返回图片');
+    }
   }
-  if (preferImage || noteInfo) {
-    try { return tryImage(); } catch (e) { errors.push(e.message); }
-  }
-  if (!preferVideo) {
-    try { return tryVideo(); } catch (e) { errors.push(e.message); }
-  }
-  throw new Error(errors.join('；') || '未从页面中发现可用资源');
+  throw new Error(errors.join('；') || '解析失败');
 }
-async function handleParse(request) {
+
+async function handleParse(request, env) {
   try {
+    const token = env.TIKHUB_TOKEN || env.TIKHUB_API_KEY;
+    if (!token) {
+      return json(
+        {
+          ok: false,
+          error:
+            '未配置 TikHub Token：请去 user.tikhub.io 注册并创建 token，然后在 Cloudflare Pages → Settings → Environment variables 添加 TIKHUB_TOKEN（重新部署后生效）',
+        },
+        500
+      );
+    }
     const reqUrl = new URL(request.url);
     let shareText = reqUrl.searchParams.get('url') || '';
     if (request.method === 'POST') {
       try {
         const body = await request.json();
         shareText = body.url || body.link || shareText;
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
     if (!shareText.trim()) return json({ ok: false, error: '请先粘贴小红书分享链接' }, 400);
-    const result = await parseShare(shareText);
+    const result = await parseShareViaTikHub(shareText, token);
     return json({ ok: true, ...result });
   } catch (e) {
     return json({ ok: false, error: e.message || '解析失败，请稍后重试' });
   }
 }
 
-/* ================= /api/media ================= */
+/* ================= /api/media（代理下载，未变） ================= */
 const ALLOW_HOST = /(^|\.)(xhscdn\.com|xiaohongshu\.com)$/;
 async function handleMedia(request) {
   const u = new URL(request.url);
@@ -310,7 +302,7 @@ async function handleMedia(request) {
   }
 }
 
-/* ================= /api/diag ================= */
+/* ================= /api/diag（未变） ================= */
 async function handleDiag(request) {
   const u = new URL(request.url);
   const target = u.searchParams.get('url') || 'https://www.xiaohongshu.com/';
@@ -349,7 +341,7 @@ async function handleDiag(request) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname === '/api/parse') return handleParse(request);
+    if (url.pathname === '/api/parse') return handleParse(request, env);
     if (url.pathname === '/api/media') return handleMedia(request);
     if (url.pathname === '/api/diag') return handleDiag(request);
     return env.ASSETS.fetch(request);
