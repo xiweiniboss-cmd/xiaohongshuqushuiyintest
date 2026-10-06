@@ -369,7 +369,7 @@ async function doParse() {
       const n = parseInt(el.textContent, 10);
       if (!isNaN(n)) el.textContent = n + 1;
     } catch {}
-    try { refreshQuota(); } catch {}
+    try { if (typeof refreshQuota === 'function') refreshQuota(); } catch {}
   } catch (e) {
     toast('解析失败：' + (e.message || e), 4200);
   } finally {
@@ -558,11 +558,17 @@ $('fbSubmit').onclick = async () => {
 
 // 每日解析配额显示
 function refreshQuota(){
+  var el = document.getElementById('quotaCount');
+  if (!el) return;
   fetch('/api/parse-quota').then(function(r){ return r.json(); }).then(function(j){
-    if (j.ok && typeof j.remaining === 'number') $('quotaCount').textContent = j.remaining;
+    if (j && j.ok && typeof j.remaining === 'number') el.textContent = j.remaining;
   }).catch(function(){});
 }
-refreshQuota();
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', function(){ refreshQuota(); setTimeout(refreshQuota, 1500); });
+} else {
+  refreshQuota(); setTimeout(refreshQuota, 1500);
+}
 </script>
 </body>
 </html>
