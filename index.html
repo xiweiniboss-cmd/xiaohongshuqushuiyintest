@@ -58,6 +58,8 @@
   .sheet h3 { margin: 0 0 6px; font-size: 17px; }
   .sheet p { font-size: 13px; color: #666; line-height: 1.7; margin: 0 0 14px; }
   .sheet .prog { font-size: 13px; color: #ff2442; margin-bottom: 12px; min-height: 18px; }
+  .sheet .prog .track { height: 10px; border-radius: 6px; background: #2a2a34; overflow: hidden; margin-bottom: 6px; }
+  .sheet .prog .bar { height: 100%; width: 0%; border-radius: 6px; background: linear-gradient(90deg, #ff2442, #ff6b4a); transition: width .15s; }
   /* 图片灯箱 */
   #lightbox { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.92); z-index: 60;
               align-items: center; justify-content: center; flex-direction: column; }
@@ -218,21 +220,37 @@ $('sheetConfirm').onclick = async () => {
 async function fetchBlob(url, onProgress) {
   const r = await fetch(mediaProxy(url), { referrerPolicy: 'no-referrer' });
   if (!r.ok) throw new Error('媒体加载失败(' + r.status + ')');
-  if (onProgress && r.body) {
+  if (onProgress && r.body && r.body.getReader) {
     const total = +r.headers.get('content-length') || 0;
     const reader = r.body.getReader();
     const chunks = [];
     let received = 0;
+    onProgress(0, total);
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       chunks.push(value);
-      received += value.length;
-      if (total) onProgress(Math.round((received / total) * 100));
+      received += value.byteLength || value.length || 0;
+      onProgress(received, total);
     }
+    try { reader.releaseLock(); } catch(e){}
     return new Blob(chunks, { type: r.headers.get('content-type') || 'application/octet-stream' });
   }
   return await r.blob();
+}
+function fmtMB(b){ return (b/1048576).toFixed(1) + ' MB'; }
+function setSheetProg(received, total){
+  const prog = document.getElementById('sheetProg');
+  if (total > 0) {
+    const pct = Math.min(100, Math.round(received / total * 100));
+    prog.innerHTML = '<div class="track"><div class="bar" style="width:' + pct + '%"></div></div>' +
+      '<div>正在获取视频…' + pct + '%（' + fmtMB(received) + ' / ' + fmtMB(total) + '）</div>';
+  } else if (received > 0) {
+    prog.innerHTML = '<div class="track"><div class="bar" style="width:100%;opacity:.4"></div></div>' +
+      '<div>正在获取视频…已接收 ' + fmtMB(received) + '</div>';
+  } else {
+    prog.innerHTML = '<div class="track"><div class="bar" style="width:0%"></div></div><div>正在获取视频…</div>';
+  }
 }
 
 // 调起 iOS 系统分享（可保存到相册 / 文件），不支持则抛错走兜底
@@ -310,11 +328,9 @@ async function downloadVideo() {
     '点击开始下载后会获取视频并弹出系统分享，请选择"存储视频"。若获取失败会自动在新页面打开视频。',
     '开始下载',
     async () => {
-      $('sheetProg').textContent = '正在获取视频…';
+      setSheetProg(0, 0);
       try {
-        const blob = await fetchBlob(url, (p) => {
-          $('sheetProg').textContent = '正在获取视频…' + p + '%';
-        });
+        const blob = await fetchBlob(url, setSheetProg);
         const file = new File([blob], name, { type: 'video/mp4' });
         await systemShare([file], currentData.title);
         toast('已调起系统分享');
@@ -574,7 +590,10 @@ function refreshQuota(){
   var el = document.getElementById('quotaCount');
   if (!el) return;
   var qurl = '/api/parse-quota';
-  try { if (typeof deviceId !== 'undefined' && deviceId) qurl += '?deviceId=' + encodeURIComponent(deviceId); } catch(e){}
+  try {
+    var did = localStorage.getItem('device_id');
+    if (did) qurl += '?deviceId=' + encodeURIComponent(did);
+  } catch(e){}
   fetch(qurl).then(function(r){ return r.json(); }).then(function(j){
     if (j && j.ok && typeof j.remaining === 'number') el.textContent = j.remaining;
   }).catch(function(){});
