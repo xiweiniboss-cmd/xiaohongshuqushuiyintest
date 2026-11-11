@@ -2,9 +2,25 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="referrer" content="no-referrer">
 <title>小红书无水印解析</title>
+<meta name="description" content="粘贴小红书分享链接，保存笔记里的原图和无水印视频。">
+<meta name="theme-color" content="#141415">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23141415'/%3E%3Cpath d='M14 24V14h10M40 14h10v10M50 40v10H40M24 50H14V40' fill='none' stroke='%23FF2442' stroke-width='4'/%3E%3Cpath d='M27 22v20l16-10z' fill='%23FF2442'/%3E%3C/svg%3E">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="小红书无水印解析">
+<meta property="og:title" content="小红书无水印解析">
+<meta property="og:description" content="粘贴小红书分享链接，保存笔记里的原图和无水印视频。">
+<meta property="og:url" content="https://xiaohongshuqushuiyin.pages.dev/">
+<meta property="og:locale" content="zh_CN">
+<meta property="og:image" content="https://xiaohongshuqushuiyin.pages.dev/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="小红书无水印解析">
+<meta name="twitter:description" content="粘贴小红书分享链接，保存笔记里的原图和无水印视频。">
+<meta name="twitter:image" content="https://xiaohongshuqushuiyin.pages.dev/og.png">
 <style>
 /* unslop：暖白纸面 + 小红书红只用在主动作和「原图」小章。界面设计参考 unslop by @heydamir（CC BY 4.0） */
 *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
@@ -256,6 +272,7 @@ footer{ text-align:center; color:var(--muted); font-size:12px; margin-top:32px; 
       </div>
     </div>
     <button class="btn-primary" id="parseBtn" style="width:100%;margin-top:14px">解析</button>
+    <div id="tsParseWidget" style="display:none;margin-top:10px"></div>
 <div class="hint">无需登录，服务器直接抓取笔记页面</div>
   </div>
 
@@ -352,6 +369,7 @@ footer{ text-align:center; color:var(--muted); font-size:12px; margin-top:32px; 
       <input type="file" id="fbFiles" accept="image/*,video/*" multiple hidden>
     </div>
     <p class="fb-note" id="fbLinkNote" hidden>输入框里的链接会一起提交，方便对照是哪一条。</p>
+    <div id="fbTsBox" style="display:none;margin:8px 0"></div>
     <div class="fb-actions">
       <button class="btn-primary" id="fbSubmit" type="button">提交反馈</button>
     </div>
@@ -373,6 +391,75 @@ var deviceId = (function(){
 })();
 
 const mediaProxy = (url) => '/api/media?url=' + encodeURIComponent(url);
+
+/* 人机验证（懒加载）：首屏不加载 Turnstile，用户第一次点「开始解析」（或打开反馈）时才拉脚本并渲染。
+   站点公钥从 /api/turnstile-key 取；后端没配公钥时返回空，这里就直接放行（后端也不会校验）。
+   脚本全页只加载一次（重复引入会卡死组件）；每个需要验证的位置用 JxTs.make() 各自一个组件。 */
+var JxTs = (function(){
+  var keyP = null, scriptP = null;
+  function siteKey(){
+    if (!keyP) keyP = fetch('/api/turnstile-key').then(function(r){ return r.json(); })
+      .then(function(j){ return (j && j.ok && j.siteKey) ? String(j.siteKey) : ''; })
+      .catch(function(){ keyP = null; return ''; });
+    return keyP;
+  }
+  function script(){
+    if (window.turnstile) return Promise.resolve();
+    if (!scriptP) scriptP = new Promise(function(resolve, reject){
+      var s = document.createElement('script');
+      s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      s.async = true;
+      s.onload = function(){ resolve(); };
+      s.onerror = function(){ scriptP = null; reject(new Error('人机验证组件加载失败，请检查网络后重试')); };
+      document.head.appendChild(s);
+    });
+    return scriptP;
+  }
+  function make(boxId){
+    var wid = null, waiters = [];
+    function flush(ok, val){ var w = waiters; waiters = []; w.forEach(function(f){ ok ? f[0](val) : f[1](val); }); }
+    // 取一个可用 token：需要时渲染组件并等验证完成；后端没配公钥时返回 ''
+    function token(){
+      return siteKey().then(function(k){
+        if (!k) return '';
+        return script().then(function(){
+          return new Promise(function(resolve, reject){
+            var timer = setTimeout(function(){ reject(new Error('人机验证超时，请完成验证后再点一次')); }, 120000);
+            var done = function(t){ clearTimeout(timer); resolve(t); };
+            var fail = function(e){ clearTimeout(timer); reject(e || new Error('人机验证未通过，请再点一次')); };
+            if (wid === null) {
+              var box = document.getElementById(boxId);
+              if (!box) { fail(new Error('人机验证组件加载失败，请刷新页面重试')); return; }
+              box.style.display = '';
+              try {
+                wid = turnstile.render(box, {
+                  sitekey: k, theme: 'light', language: 'zh-cn',
+                  callback: function(t){ flush(true, t); },
+                  'error-callback': function(){ flush(false, new Error('人机验证出错，请再点一次')); return true; },
+                  'expired-callback': function(){ try { turnstile.reset(wid); } catch (e) {} }
+                });
+              } catch (e) { fail(new Error('人机验证组件加载失败，请刷新页面重试')); return; }
+            } else {
+              var cur = '';
+              try { cur = turnstile.getResponse(wid) || ''; } catch (e) {}
+              if (cur) { done(cur); return; }
+            }
+            waiters.push([done, fail]);
+          });
+        });
+      });
+    }
+    // token 只能用一次：请求发出后重置，下次会重新验证（通常无感自动完成）
+    function used(){ if (wid !== null) { try { turnstile.reset(wid); } catch (e) {} } }
+    return { token: token, used: used };
+  }
+  return { siteKey: siteKey, script: script, make: make };
+})();
+const JxTsParse = JxTs.make('tsParseWidget');
+const JxTsFb = JxTs.make('fbTsBox');
+// 只打开 http(s) 地址（接口返回的直链不可信，防止 javascript: 之类）
+function openHttp(u) { if (/^https?:\/\//i.test(String(u || ''))) window.open(u, '_blank', 'noopener'); else toast('地址无效，请重新解析'); }
+
 let currentData = null;      // 解析结果
 let sheetAction = null;      // 提示框确认后的动作
 let lbIndex = -1;            // 灯箱当前图片序号
@@ -495,7 +582,7 @@ async function downloadImage(img, idx, total) {
       $('sheetProg').textContent = '正在获取图片…';
       let file = null;
       // 兜底：在新标签页打开原图，长按保存
-      const fb = () => { window.open(img.url_png, '_blank'); toast('已在新页面打开图片，长按图片选择"存储到照片"', 3200); };
+      const fb = () => { openHttp(img.url_png); toast('已在新页面打开图片，长按图片选择"存储到照片"', 3200); };
       try {
         const blob = await fetchBlob(img.url_png);
         file = new File([blob], name, { type: blob.type || 'image/png' });
@@ -531,7 +618,7 @@ async function downloadAllImages() {
         }
       }
       $('sheetProg').textContent = '正在调起系统分享…';
-      const fb = () => { window.open(imgs[0].url_png, '_blank'); toast('系统分享不可用，已打开第一张，长按保存，其余请逐张保存', 3400); };
+      const fb = () => { openHttp(imgs[0].url_png); toast('系统分享不可用，已打开第一张，长按保存，其余请逐张保存', 3400); };
       try {
         if (await systemShare(files, currentData.title)) toast('已调起系统分享');
       } catch (e) {
@@ -553,14 +640,14 @@ async function downloadVideo() {
     async () => {
       setSheetProg(0, 0);
       let file = null;
-      const fb = () => { window.open(url, '_blank'); toast('已在新页面打开视频，点击分享按钮选择"存储视频"', 3400); };
+      const fb = () => { openHttp(url); toast('已在新页面打开视频，点击分享按钮选择"存储视频"', 3400); };
       try {
         const blob = await fetchBlob(url, setSheetProg);
         file = new File([blob], name, { type: 'video/mp4' });
         if (await systemShare([file], currentData.title)) toast('已调起系统分享');
       } catch (e) {
         if (e && e.needTap && file) return askTapToSave([file], currentData.title, fb);
-        window.open(url, '_blank');
+        openHttp(url);
         toast('已在新页面打开视频，点击分享按钮选择"存储视频"', 3400);
       }
     }
@@ -590,17 +677,19 @@ async function doParse() {
   $('statusText').textContent = '正在解析，请稍候…';
   $('parseBtn').disabled = true;
   try {
+    $('statusText').textContent = '人机验证中…';
+    const tsToken = await JxTsParse.token();
+    $('statusText').textContent = '正在解析，请稍候…';
     let apiUrl = '/api/parse?url=' + encodeURIComponent(text);
     if (deviceId) apiUrl += '&deviceId=' + encodeURIComponent(deviceId);
+    if (tsToken) apiUrl += '&turnstile=' + encodeURIComponent(tsToken);
+    JxTsParse.used();
     const r = await fetch(apiUrl);
     const ct = r.headers.get('content-type') || '';
     const bodyText = await r.text();
     // Safari 对非 JSON 调用 .json() 会报看不懂的英文错，这里先拦截并给中文指引
     if (!ct.includes('application/json')) {
-      throw new Error(
-        '解析接口无响应（HTTP ' + r.status + '），functions 可能没部署上：' +
-        '请检查仓库根目录下是否有 functions 文件夹，或在 Pages 设置里把 Root directory 设为 xhs-dl 后重新部署'
-      );
+      throw new Error('服务暂时不可用（HTTP ' + r.status + '），请稍后重试');
     }
     let data;
     try {
@@ -672,7 +761,7 @@ function renderResult(data) {
     });
     $('dlVideoBtn').onclick = downloadVideo;
     $('copyVLink').onclick = () => copyText(data.video_url, '视频直链已复制');
-    $('openVLink').onclick = () => window.open(data.video_url, '_blank');
+    $('openVLink').onclick = () => openHttp(data.video_url);
   } else {
     // 缩略图代理失败回退直链
     box.querySelectorAll('.thumb img').forEach((im) => {
@@ -714,7 +803,7 @@ $('parseBtn').onclick = doParse;
 
 /* 本站解析次数 */
 fetch('/api/stats').then((r) => r.json()).then((j) => {
-  if (j.ok && typeof j.parseCount === 'number') $('parseCount').textContent = j.parseCount;
+  $('parseCount').textContent = (j && j.ok && typeof j.parseCount === 'number') ? j.parseCount : '-';
 }).catch(() => {});
 
 $('pasteBtn').onclick = async () => {
@@ -844,6 +933,9 @@ $('fbSubmit').onclick = async () => {
     fd.append('contact', $('fbContact').value.trim());
     fd.append('page', location.href);
     for (const f of files) fd.append('files', f, f.name);
+    const tsToken = await JxTsFb.token();
+    if (tsToken) fd.append('cf-turnstile-response', tsToken);
+    JxTsFb.used();
     const r = await fetch('/api/feedback', { method: 'POST', body: fd });
     const j = await r.json();
     if (j.ok) {
@@ -853,8 +945,8 @@ $('fbSubmit').onclick = async () => {
     } else {
       toast('提交失败：' + (j.error || '请稍后重试'));
     }
-  } catch {
-    toast('网络错误，请稍后重试');
+  } catch (e) {
+    toast((e && e.message) || '网络错误，请稍后重试');
   }
   btn.disabled = false;
   btn.textContent = '提交反馈';
