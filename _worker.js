@@ -1,6 +1,7 @@
 // Cloudflare Pages 单文件 Worker（RedFoxHub 版）
 // 小红书已封锁数据中心 IP 的匿名抓取，解析改走 RedFoxHub API
 // 需要环境变量 REDFOX_API_KEY（去 redfox.hk 注册，控制台「API密钥」创建，填到 Pages → Settings → Environment variables）
+// 人机验证：TURNSTILE_SITE_KEY（公开）+ TURNSTILE_SECRET_KEY（保密），各站共用同一套；配了 secret 才校验解析和反馈
 // 部署：本文件放仓库根目录（与 index.html 同级）
 
 /* ================= 公共 ================= */
@@ -20,10 +21,44 @@ const UA_PC =
 
 const REDFOX_BASE = 'https://redfox.hk';
 
+// Cloudflare Turnstile 人机验证：配了 TURNSTILE_SECRET_KEY 才校验（不配 = 跳过，向后兼容）
+async function verifyTurnstile(token, secret, ip) {
+  try {
+    const resp = await fetch('https://challenges.cloudflare.com/turnstile/v0/siteverify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ secret, response: token, remoteip: ip || '' }),
+    });
+    const j = await resp.json();
+    return j && j.success === true;
+  } catch {
+    return false;
+  }
+}
+async function turnstileGate(env, token, ip) {
+  const secret = (env.TURNSTILE_SECRET_KEY || '').trim();
+  if (!secret) return null;
+  if (!token) return json({ ok: false, error: '请先完成人机验证' }, 400);
+  if (!(await verifyTurnstile(token, secret, ip))) return json({ ok: false, error: '人机验证未通过，请重试' }, 403);
+  return null;
+}
+
+// 域名判断：host 等于某个域名，或以「.域名」结尾
+function hostMatches(host, list) {
+  host = String(host || '').toLowerCase().replace(/\.$/, '');
+  return list.some((d) => host === d || host.endsWith('.' + d));
+}
+const XHS_PAGE_HOSTS = ['xiaohongshu.com', 'xhslink.com', 'rednote.com'];
+const XHS_MEDIA_HOSTS = ['xhscdn.com', 'xiaohongshu.com'];
+
 function extractFirstUrl(text) {
   const m = String(text || '').match(/https?:\/\/[^\s"'<>\\]+/);
   if (!m) throw new Error('没有找到有效的小红书链接，请粘贴完整的分享链接');
-  return m[0].replace(/[),.;!?\]}>»」』】，。；：？！）】]+$/, '');
+  const u = m[0].replace(/[),.;!?\]}>»」』】，。；：？！）】]+$/, '');
+  let h = '';
+  try { h = new URL(u).hostname; } catch {}
+  if (!hostMatches(h, XHS_PAGE_HOSTS)) throw new Error('只支持小红书链接（xiaohongshu.com / xhslink.com）');
+  return u;
 }
 function normalizeUrl(u) {
   return String(u || '')
@@ -231,7 +266,9 @@ async function resolveNoteId(shareText) {
     }
     const loc = r.headers.get('location');
     if (!loc || r.status < 300 || r.status >= 400) break;
-    url = new URL(loc, url).href;
+    const next = new URL(loc, url);
+    if (!hostMatches(next.hostname, XHS_PAGE_HOSTS)) break; // 跳出小红书域名就停，不再跟
+    url = next.href;
     noteId = extractNoteId(url);
   }
   return { noteId, noteUrl: url };
@@ -388,12 +425,18 @@ async function handleParse(request, env) {
       }
     }
     if (!shareText.trim()) return json({ ok: false, error: '请先粘贴小红书分享链接' }, 400);
-    const debug = reqUrl.searchParams.get('debug') === '1';
+    // 链接不是小红书域名：直接 400，不调计费接口
+    try { extractFirstUrl(shareText); } catch (e) { return json({ ok: false, error: e.message }, 400); }
+    // debug 输出上游数据结构，只给带管理口令的请求
+    const debug = reqUrl.searchParams.get('debug') === '1' && checkAdminKey(reqUrl, env);
+    const parseIp = request.headers.get('cf-connecting-ip') || '';
+    // 解析接口人机验证（配了 TURNSTILE_SECRET_KEY 才生效）
+    const tsDeny = await turnstileGate(env, reqUrl.searchParams.get('turnstile') || '', parseIp);
+    if (tsDeny) return tsDeny;
     // 解析冷却：同一 IP 60 秒内只能解析一次（防刷 API 烧积分）
     const PARSE_COOLDOWN_SECS = 60;
-    const parseIp = request.headers.get('cf-connecting-ip') || '';
     if (parseIp && env.FEEDBACK_KV) {
-      const lastTs = await env.FEEDBACK_KV.get('pcool_' + parseIp);
+      const lastTs = await env.FEEDBACK_KV.get('pcool_xhs_' + parseIp);
       if (lastTs) {
         const remain = PARSE_COOLDOWN_SECS - Math.floor((Date.now() - Number(lastTs)) / 1000);
         if (remain > 0)
@@ -407,7 +450,7 @@ async function handleParse(request, env) {
     const parseUrl = new URL(request.url);
   const deviceId = parseUrl.searchParams.get('deviceId') || '';
   const quotaId = deviceId || parseIp;
-  const quotaKey = 'dlimit_' + quotaId + '_' + bjDate;
+  const quotaKey = 'dlimit_xhs_' + quotaId + '_' + bjDate;
     let usedToday = 0;
     if (parseIp && env.FEEDBACK_KV) {
       try { usedToday = Number((await env.FEEDBACK_KV.get(quotaKey)) || 0); } catch {}
@@ -416,7 +459,7 @@ async function handleParse(request, env) {
     }
     const result = await parseShareViaRedFox(shareText, apiKey, debug);
     if (parseIp && env.FEEDBACK_KV)
-      await env.FEEDBACK_KV.put('pcool_' + parseIp, String(Date.now()), {
+      await env.FEEDBACK_KV.put('pcool_xhs_' + parseIp, String(Date.now()), {
         expirationTtl: PARSE_COOLDOWN_SECS,
       });
     // 本站解析次数统计（仅成功计数）
@@ -470,7 +513,6 @@ async function handleParse(request, env) {
 }
 
 /* ================= /api/media（代理下载，未变） ================= */
-const ALLOW_HOST = /(^|\.)(xhscdn\.com|xiaohongshu\.com)$/;
 async function handleMedia(request) {
   const u = new URL(request.url);
   const target = u.searchParams.get('url') || '';
@@ -481,22 +523,37 @@ async function handleMedia(request) {
   } catch {
     return new Response('bad url', { status: 400 });
   }
-  if (!ALLOW_HOST.test(host)) return new Response('host not allowed', { status: 403 });
+  if (!/^https?:$/.test(new URL(target).protocol) || !hostMatches(host, XHS_MEDIA_HOSTS)) return new Response('host not allowed', { status: 403 });
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
-    const resp = await fetch(target, {
-      headers: { 'User-Agent': UA_PC, Referer: 'https://www.xiaohongshu.com/', Accept: '*/*' },
-      redirect: 'follow',
-      signal: ctrl.signal,
-    });
-    if (!resp.ok || !resp.body) return new Response(`upstream ${resp.status}`, { status: 502 });
-    const headers = new Headers(resp.headers);
+    // 手动跟随跳转，每一跳都重新校验域名（以前 redirect:'follow' 只校验第一跳）
+    let cur = target;
+    let resp = null;
+    for (let i = 0; i < 4; i++) {
+      resp = await fetch(cur, {
+        headers: { 'User-Agent': UA_PC, Referer: 'https://www.xiaohongshu.com/', Accept: '*/*', ...(request.headers.get('range') ? { Range: request.headers.get('range') } : {}) },
+        redirect: 'manual',
+        signal: ctrl.signal,
+      });
+      const loc = resp.headers.get('location');
+      if (resp.status >= 300 && resp.status < 400 && loc) {
+        const next = new URL(loc, cur);
+        if (!/^https?:$/.test(next.protocol) || !hostMatches(next.hostname, XHS_MEDIA_HOSTS))
+          return new Response('host not allowed', { status: 403 });
+        cur = next.toString();
+        continue;
+      }
+      break;
+    }
+    if (!resp || !(resp.ok || resp.status === 206) || !resp.body) return new Response(`upstream ${resp ? resp.status : 0}`, { status: 502 });
+    // 只转发必要的响应头（不再原样转发 set-cookie 等）
+    const headers = new Headers();
+    for (const k of ['content-type', 'content-length', 'accept-ranges', 'content-range', 'last-modified', 'etag'])
+      if (resp.headers.get(k)) headers.set(k, resp.headers.get(k));
     headers.set('Access-Control-Allow-Origin', '*');
     headers.set('Cache-Control', 'public, max-age=3600');
-    headers.delete('content-security-policy');
-    headers.delete('content-security-policy-report-only');
-    return new Response(resp.body, { status: 200, headers });
+    return new Response(resp.body, { status: resp.status === 206 ? 206 : 200, headers });
   } catch {
     return new Response('proxy error', { status: 502 });
   } finally {
@@ -505,9 +562,20 @@ async function handleMedia(request) {
 }
 
 /* ================= /api/diag（未变） ================= */
-async function handleDiag(request) {
+async function handleDiag(request, env) {
   const u = new URL(request.url);
+  // 只给管理员用，并且只抓小红书自家域名（以前任何人可以让它抓任意网址）
+  if (!checkAdminKey(u, env)) return json({ ok: false, error: '无权访问' }, 403);
   const target = u.searchParams.get('url') || 'https://www.xiaohongshu.com/';
+  let th = '';
+  try {
+    const t = new URL(target);
+    if (t.protocol !== 'https:') throw new Error();
+    th = t.hostname;
+  } catch {
+    return json({ ok: false, error: '链接无效' }, 400);
+  }
+  if (!hostMatches(th, XHS_PAGE_HOSTS)) return json({ ok: false, error: '只能诊断小红书域名' }, 400);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 12000);
   try {
@@ -552,6 +620,7 @@ async function handleFeedbackSubmit(request, env) {
     contact = '',
     page = '',
     files = [];
+  let tsToken = '';
   if (ct.includes('multipart/form-data')) {
     let form;
     try {
@@ -562,6 +631,7 @@ async function handleFeedbackSubmit(request, env) {
     message = String(form.get('message') || '').trim();
     contact = String(form.get('contact') || '').trim().slice(0, 120);
     page = String(form.get('page') || '').slice(0, 200);
+    tsToken = String(form.get('cf-turnstile-response') || '');
     files = form.getAll('files').filter((f) => f && typeof f !== 'string' && f.size > 0);
   } else {
     // 兼容 JSON 提交（无附件）
@@ -574,16 +644,19 @@ async function handleFeedbackSubmit(request, env) {
     message = String(body.message || '').trim();
     contact = String(body.contact || '').trim().slice(0, 120);
     page = String(body.page || '').slice(0, 200);
+    tsToken = String(body['cf-turnstile-response'] || '');
   }
   if (!message) return json({ ok: false, error: '请填写反馈内容' }, 400);
   if (message.length > 2000) return json({ ok: false, error: '内容太长，请精简到 2000 字以内' }, 400);
   if (files.length > 3) return json({ ok: false, error: '最多上传 3 个附件' }, 400);
+  const fbTsDeny = await turnstileGate(env, tsToken, request.headers.get('cf-connecting-ip') || '');
+  if (fbTsDeny) return fbTsDeny;
 
   // 提交冷却：同一 IP 10 分钟内只能提交一次（KV 自动过期）
   const COOLDOWN_SECS = 600;
   const clientIp = request.headers.get('cf-connecting-ip') || '';
   if (clientIp) {
-    const lastTs = await env.FEEDBACK_KV.get('cool_' + clientIp);
+    const lastTs = await env.FEEDBACK_KV.get('cool_xhs_' + clientIp);
     if (lastTs) {
       const remain = COOLDOWN_SECS - Math.floor((Date.now() - Number(lastTs)) / 1000);
       if (remain > 0)
@@ -633,7 +706,7 @@ async function handleFeedbackSubmit(request, env) {
   await env.FEEDBACK_KV.put(id, JSON.stringify(record));
   // 写入冷却时间戳（10 分钟后自动过期；键前缀 cool_ 不与 fb_ 反馈键冲突）
   if (clientIp)
-    await env.FEEDBACK_KV.put('cool_' + clientIp, String(Date.now()), {
+    await env.FEEDBACK_KV.put('cool_xhs_' + clientIp, String(Date.now()), {
       expirationTtl: COOLDOWN_SECS,
     });
   return json({ ok: true });
@@ -648,14 +721,22 @@ async function handleFeedbackList(request, env) {
   const url = new URL(request.url);
   if (!checkAdminKey(url, env)) return json({ ok: false, error: '无权访问' }, 403);
   if (!env.FEEDBACK_KV) return json({ ok: false, error: '未绑定 KV' }, 500);
-  const listed = await env.FEEDBACK_KV.list({ prefix: 'fb_' });
   const items = [];
-  for (const k of listed.keys) {
-    try {
-      const v = await env.FEEDBACK_KV.get(k.name);
-      if (v) items.push(JSON.parse(v));
-    } catch {
-      /* ignore */
+  for (const prefix of ['fb_', 'feedback_']) {
+    const listed = await env.FEEDBACK_KV.list({ prefix });
+    for (const k of listed.keys) {
+      try {
+        const v = await env.FEEDBACK_KV.get(k.name);
+        if (!v) continue;
+        const it = JSON.parse(v);
+        // 快手站旧版记录：key 是 feedback_<id>，时间字段叫 ts，没有 page
+        if (prefix === 'feedback_') {
+          if (!it.time && it.ts) it.time = new Date(Number(it.ts)).toISOString();
+          if (!it.page || !/^https?:/.test(String(it.page))) it.page = 'https://kuaishoujiexi.pages.dev/';
+          it.id = String(it.id || k.name.slice('feedback_'.length));
+        }
+        items.push(it);
+      } catch {}
     }
   }
   items.sort((a, b) => String(b.time || '').localeCompare(String(a.time || '')));
@@ -670,7 +751,7 @@ async function handleFeedbackDelete(request, env) {
   if (!/^fb_[a-z0-9_]+$/i.test(id)) return json({ ok: false, error: '参数错误' }, 400);
   // 先读记录，把附件从 R2 一并删掉
   try {
-    const v = await env.FEEDBACK_KV.get(id);
+    const v = (await env.FEEDBACK_KV.get(id)) || (await env.FEEDBACK_KV.get('feedback_' + id));
     if (v) {
       const rec = JSON.parse(v);
       if (env.FEEDBACK_BUCKET && Array.isArray(rec.attachments)) {
@@ -687,6 +768,7 @@ async function handleFeedbackDelete(request, env) {
     /* ignore */
   }
   await env.FEEDBACK_KV.delete(id);
+  await env.FEEDBACK_KV.delete('feedback_' + id); // 快手旧版记录
   return json({ ok: true });
 }
 
@@ -744,6 +826,8 @@ const siteName = (p) => {
     if (h.includes('douyin')) return '抖音站';
     if (h.includes('youtube')) return 'YouTube站';
     if (h.includes('bilibili')) return 'B站站';
+    if (h.includes('kuaishou')) return '快手站';
+    if (h.includes('weibo')) return '微博站';
     if (h.includes('DeepSeek')) return 'DeepSeek站';
     return h;
   } catch { return ''; }
@@ -839,7 +923,7 @@ h2{font-size:16px;margin:24px 0 12px;color:#f1f1f3}
 </style></head>
 <body><div class="wrap">
 <h1>📊 数据总览 <span id="time"></span></h1>
-<div class="sub">五站解析次数统计（仅成功计数）</div>
+<div class="sub">各站解析次数统计（仅成功计数）</div>
 <div class="grid" id="grid"><div class="err">加载中…</div></div>
 <div class="total" id="total" style="display:none"><div class="num" id="totalNum">0</div><div class="label">累计解析</div></div>
 
@@ -867,7 +951,7 @@ h2{font-size:16px;margin:24px 0 12px;color:#f1f1f3}
 </div><script>
 const key = new URLSearchParams(location.search).get('key') || '';
 document.getElementById('adminLink').href = '/admin?key=' + encodeURIComponent(key);
-const COLORS = ['#FE2C55','#25F4EE','#FFC107','#9C27B0'];
+const COLORS = ['#FE2C55','#25F4EE','#FFC107','#9C27B0','#FF7A1A','#4CAF50'];
 const COUNTRY_ZH = {CN:'中国',US:'美国',JP:'日本',KR:'韩国',HK:'香港',TW:'台湾',MO:'澳门',SG:'新加坡',GB:'英国',DE:'德国',FR:'法国',IT:'意大利',ES:'西班牙',CA:'加拿大',AU:'澳大利亚',NZ:'新西兰',RU:'俄罗斯',IN:'印度',BR:'巴西',MX:'墨西哥',TH:'泰国',MY:'马来西亚',ID:'印度尼西亚',PH:'菲律宾',VN:'越南',TR:'土耳其',AE:'阿联酋',XX:'未知'};
 async function load(){
   const grid = document.getElementById('grid');
@@ -993,7 +1077,7 @@ load();
 async function handleParseHistory(request, env) {
   const url = new URL(request.url);
   if (!checkAdminKey(url, env)) return json({ ok: false, error: '无权访问' }, 403);
-  const siteNames = { tiktok: 'TikTok站', xhs: '小红书站', douyin: '抖音站', youtube: 'YouTube站', bilibili: 'B站站' };
+  const siteNames = { tiktok: 'TikTok站', xhs: '小红书站', douyin: '抖音站', youtube: 'YouTube站', bilibili: 'B站站', kuaishou: '快手站' };
   const all = [];
   if (env.FEEDBACK_KV) {
     for (const site of Object.keys(siteNames)) {
@@ -1013,12 +1097,12 @@ async function handleGeoStats(request, env) {
   const url = new URL(request.url);
   if (!checkAdminKey(url, env)) return json({ ok: false, error: '无权访问' }, 403);
   const byCountry = {};
-  const bySite = { tiktok: {}, xhs: {}, douyin: {}, youtube: {}, bilibili: {} };
+  const bySite = { tiktok: {}, xhs: {}, douyin: {}, youtube: {}, bilibili: {}, kuaishou: {} };
   if (env.FEEDBACK_KV) {
     try {
       const listed = await env.FEEDBACK_KV.list({ prefix: 'geoparse_' });
       for (const k of listed.keys) {
-        const m = k.name.match(/^geoparse_(tiktok|xhs|douyin|youtube|bilibili)_([A-Z]{2})$/);
+        const m = k.name.match(/^geoparse_(tiktok|xhs|douyin|youtube|bilibili|kuaishou)_([A-Z]{2})$/);
         if (!m) continue;
         const n = Number((await env.FEEDBACK_KV.get(k.name)) || 0);
         if (!n) continue;
@@ -1042,7 +1126,7 @@ async function handleParseQuota(request, env) {
   const bjDate = new Date(Date.now() + 8 * 3600 * 1000).toISOString().slice(0, 10);
   let used = 0;
   if (quotaId && env.FEEDBACK_KV) {
-    try { used = Number((await env.FEEDBACK_KV.get('dlimit_' + quotaId + '_' + bjDate)) || 0); } catch {}
+    try { used = Number((await env.FEEDBACK_KV.get('dlimit_xhs_' + quotaId + '_' + bjDate)) || 0); } catch {}
   }
   return json({ ok: true, limit: DAILY_LIMIT, used, remaining: Math.max(0, DAILY_LIMIT - used) });
 }
@@ -1057,6 +1141,7 @@ async function handleStatsAll(request, env) {
     { key: 'stats_parse_douyin', name: '抖音站' },
     { key: 'stats_parse_youtube', name: 'YouTube站' },
     { key: 'stats_parse_bilibili', name: 'B站站' },
+    { key: 'stats_parse_kuaishou', name: '快手站' },
   ];
   const result = [];
   for (const s of sites) {
@@ -1075,7 +1160,10 @@ export default {
     const url = new URL(request.url);
     if (url.pathname === '/api/parse') return handleParse(request, env);
     if (url.pathname === '/api/media') return handleMedia(request);
-    if (url.pathname === '/api/diag') return handleDiag(request);
+    if (url.pathname === '/api/diag') return handleDiag(request, env);
+    // Turnstile 公开 site key 下发（没配就返回空，前端据此跳过）
+    if (url.pathname === '/api/turnstile-key')
+      return json({ ok: true, siteKey: (env.TURNSTILE_SITE_KEY || '').trim(), required: !!(env.TURNSTILE_SECRET_KEY || '').trim() });
     if (url.pathname === '/api/feedback') {
       if (request.method === 'POST') return handleFeedbackSubmit(request, env);
       if (request.method === 'DELETE') return handleFeedbackDelete(request, env);
@@ -1084,13 +1172,12 @@ export default {
     if (url.pathname === '/api/feedback/list') return handleFeedbackList(request, env);
     // 本站解析次数
     if (url.pathname === '/api/stats') {
-      let n = 0;
-      if (env.FEEDBACK_KV) {
-        try {
-          n = Number((await env.FEEDBACK_KV.get('stats_parse_xhs')) || 0);
-        } catch {}
-      }
-      return json({ ok: true, parseCount: n });
+      if (!env.FEEDBACK_KV) return json({ ok: true, bound: false, parseCount: null, error: '未绑定 KV' });
+      let n = null;
+      try {
+        n = Number((await env.FEEDBACK_KV.get('stats_parse_xhs')) || 0);
+      } catch {}
+      return json({ ok: true, bound: true, parseCount: n });
     }
     if (url.pathname.startsWith('/api/fb-file/')) return handleFeedbackFile(request, env);
     if (url.pathname === '/api/stats-all') return handleStatsAll(request, env);
