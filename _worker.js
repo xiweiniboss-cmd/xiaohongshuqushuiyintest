@@ -255,7 +255,8 @@ function hostMatches(host, list) {
   host = String(host || '').toLowerCase().replace(/\.$/, '');
   return list.some((d) => host === d || host.endsWith('.' + d));
 }
-const XHS_PAGE_HOSTS = ['xiaohongshu.com', 'xhslink.com', 'rednote.com'];
+// 页面/短链域名（只用于识别输入和跟随跳转，不用于下载代理）。xhslink.cn 是 App 现在复制出来的新短链域名
+const XHS_PAGE_HOSTS = ['xiaohongshu.com', 'xhslink.com', 'xhslink.cn', 'rednote.com'];
 const XHS_MEDIA_HOSTS = ['xhscdn.com', 'xiaohongshu.com'];
 
 function extractFirstUrl(text) {
@@ -264,7 +265,7 @@ function extractFirstUrl(text) {
   const u = m[0].replace(/[),.;!?\]}>»」』】，。；：？！）】]+$/, '');
   let h = '';
   try { h = new URL(u).hostname; } catch {}
-  if (!hostMatches(h, XHS_PAGE_HOSTS)) throw new Error('只支持小红书链接（xiaohongshu.com / xhslink.com）');
+  if (!hostMatches(h, XHS_PAGE_HOSTS)) throw new Error('只支持小红书链接（xiaohongshu.com / xhslink.cn / xhslink.com）');
   return u;
 }
 function normalizeUrl(u) {
