@@ -246,6 +246,32 @@ footer{ text-align:center; color:var(--muted); font-size:12px; margin-top:32px; 
   #parseBtn .press-ripple{ display:none; }
 }
 </style>
+<script id="jx-device">
+// 防滥用设备 ID：首次访问时在本机浏览器生成一个随机 UUID（不采集任何设备指纹），解析时放在请求头 X-Device-Id
+var jxDeviceUuid = (function () {
+  var re = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  var v = '';
+  try { v = localStorage.getItem('jx_device_uuid') || ''; } catch (e) {}
+  if (re.test(v)) return v;
+  try {
+    if (window.crypto && crypto.randomUUID) v = crypto.randomUUID();
+    else {
+      var b = new Uint8Array(16), h = [];
+      crypto.getRandomValues(b);
+      b[6] = (b[6] & 15) | 64; b[8] = (b[8] & 63) | 128;
+      for (var i = 0; i < 16; i++) h.push((b[i] + 256).toString(16).slice(1));
+      v = h.slice(0, 4).join('') + '-' + h.slice(4, 6).join('') + '-' + h.slice(6, 8).join('') + '-' + h.slice(8, 10).join('') + '-' + h.slice(10).join('');
+    }
+  } catch (e) { return ''; }
+  try { localStorage.setItem('jx_device_uuid', v); } catch (e) {}
+  return v;
+})();
+function jxParseHeaders(h) {
+  h = h || {};
+  if (jxDeviceUuid) h['X-Device-Id'] = jxDeviceUuid;
+  return h;
+}
+</script>
 </head>
 <body>
 <div class="wrap">
@@ -304,7 +330,7 @@ footer{ text-align:center; color:var(--muted); font-size:12px; margin-top:32px; 
     <div class="jxh-msg" id="jxhMsg" aria-live="polite"></div>
   </section>
 
-  <footer>仅供个人学习与收藏使用，请尊重原作者版权<br>请勿用于商用或跨平台搬运</footer>
+  <footer>仅供个人学习与收藏使用，请尊重原作者版权<br>请勿用于商用或跨平台搬运<br><span class="jx-privacy">为防滥用，本站会记录解析链接、IP、归属地和设备标识，保留 30 天。</span></footer>
 </div>
 
 <!-- 下载提示框 -->
@@ -684,7 +710,7 @@ async function doParse() {
     if (deviceId) apiUrl += '&deviceId=' + encodeURIComponent(deviceId);
     if (tsToken) apiUrl += '&turnstile=' + encodeURIComponent(tsToken);
     JxTsParse.used();
-    const r = await fetch(apiUrl);
+    const r = await fetch(apiUrl, { headers: jxParseHeaders() });
     const ct = r.headers.get('content-type') || '';
     const bodyText = await r.text();
     // Safari 对非 JSON 调用 .json() 会报看不懂的英文错，这里先拦截并给中文指引
