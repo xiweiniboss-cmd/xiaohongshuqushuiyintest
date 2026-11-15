@@ -924,12 +924,12 @@ $('fbSubmit').onclick = async () => {
   btn.disabled = true;
   btn.textContent = '提交中…';
   try {
-    var text = msg || '（未写具体描述）';
-    if (fbKind) text = '【' + fbKind + '】\n' + text;
+    // 问题类型和当前输入的链接单独提交（kind / link），不再拼进反馈内容，免得超过 2000 字被拒
     var raw = ($('linkInput').value || '').trim();
-    if (/https?:\/\//i.test(raw)) text += '\n\n当前输入：\n' + raw.slice(0, 800);
     const fd = new FormData();
-    fd.append('message', text);
+    fd.append('message', msg || '（未写具体描述）');
+    if (fbKind) fd.append('kind', fbKind);
+    if (/https?:\/\//i.test(raw)) fd.append('link', raw.slice(0, 800));
     fd.append('contact', $('fbContact').value.trim());
     fd.append('page', location.href);
     for (const f of files) fd.append('files', f, f.name);
@@ -937,13 +937,13 @@ $('fbSubmit').onclick = async () => {
     if (tsToken) fd.append('cf-turnstile-response', tsToken);
     JxTsFb.used();
     const r = await fetch('/api/feedback', { method: 'POST', body: fd });
-    const j = await r.json();
-    if (j.ok) {
+    const j = await r.json().catch(function () { return null; });
+    if (j && j.ok) {
       fbClose();
       fbReset();
       toast('反馈已提交，谢谢！');
     } else {
-      toast('提交失败：' + (j.error || '请稍后重试'));
+      toast('提交失败：' + ((j && j.error) || ('服务器出错（HTTP ' + r.status + '），请稍后重试')));
     }
   } catch (e) {
     toast((e && e.message) || '网络错误，请稍后重试');
