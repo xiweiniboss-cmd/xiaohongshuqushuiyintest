@@ -260,13 +260,15 @@ const XHS_PAGE_HOSTS = ['xiaohongshu.com', 'xhslink.com', 'xhslink.cn', 'rednote
 const XHS_MEDIA_HOSTS = ['xhscdn.com', 'xiaohongshu.com'];
 
 // 没写 https:// 的裸链接（如 xhslink.cn/o/abc）：取文字里第一个像域名的片段补上 https://，
-// 之后照样走 hostMatches 白名单校验，冒充域名（xhslink.cn.evil.example、evilxhslink.cn）还是会被拒
+// 之后照样走 hostMatches 白名单校验，冒充域名（xhslink.cn.evil.example、evilxhslink.cn）还是会被拒。
+// 链接只收 RFC3986 子集字符，遇到空白、汉字、全角标点就停，避免「xhslink.cn/o/abc打开」把「打开」吃进网址
+const URL_CHARS = "[A-Za-z0-9\\-._~:/?#\\[\\]@!$&'*+,;=%]";
 function findBareUrl(text) {
-  const m = String(text || '').match(/(?:^|[^\w.@\/:=-])((?:[a-z0-9-]+\.)+[a-z]{2,})(?![\w.-])([\/?#][^\s"'<>\\]*)?/i);
+  const m = String(text || '').match(new RegExp('(?:^|[^\\w.@/=:-])((?:[a-z0-9-]+\\.)+[a-z]{2,})(?![\\w.-])([/?#]' + URL_CHARS + '*)?', 'i'));
   return m ? 'https://' + m[1] + (m[2] || '') : null;
 }
 function extractFirstUrl(text) {
-  const hit = String(text || '').match(/https?:\/\/[^\s"'<>\\]+/);
+  const hit = String(text || '').match(new RegExp('https?://' + URL_CHARS + '+', 'i'));
   const raw = hit ? hit[0] : findBareUrl(text);
   if (!raw) throw new Error('没有找到有效的小红书链接，请粘贴完整的分享链接');
   const u = raw.replace(/[),.;!?\]}>»」』】，。；：？！）】]+$/, '');

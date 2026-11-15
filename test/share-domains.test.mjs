@@ -102,3 +102,23 @@ test('没有链接的文字仍提示没找到', async () => {
   assert.equal(r.status, 400);
   assert.ok(r.body.includes('没有找到'), r.body.slice(0, 160));
 });
+
+// 裸链接 / 带协议链接后面紧贴中文或全角标点时，不能把后面的字吃进网址
+for (const [text, path] of [
+  ['xhslink.cn/o/abc打开', '/o/abc'],
+  ['https://xhslink.cn/o/abc打开', '/o/abc'],
+  ['xhslink.cn/o/abc。打开App', '/o/abc'],
+  ['复制xhslink.cn/o/abc，打开【小红书】', '/o/abc'],
+  ['xhslink.cn/o/abc　打开', '/o/abc'],
+]) {
+  test('紧贴中文时截断 ' + text, async () => {
+    const r = await parse(text);
+    assert.ok(!r.body.includes(REJECT) && !r.body.includes('没有找到'), r.status + ' ' + r.body.slice(0, 160));
+    const grabbed = r.calls.filter((u) => /xhslink\.cn/.test(u));
+    assert.ok(grabbed.length > 0, '没去抓短链：' + r.calls.join('\n'));
+    assert.ok(grabbed.every((u) => {
+      const x = new URL(u);
+      return x.pathname === path && !/[\u0080-\uFFFF]/.test(u);
+    }), '链接不该带中文：' + grabbed.join('\n'));
+  });
+}
