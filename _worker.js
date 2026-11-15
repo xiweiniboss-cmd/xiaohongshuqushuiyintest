@@ -259,10 +259,17 @@ function hostMatches(host, list) {
 const XHS_PAGE_HOSTS = ['xiaohongshu.com', 'xhslink.com', 'xhslink.cn', 'rednote.com'];
 const XHS_MEDIA_HOSTS = ['xhscdn.com', 'xiaohongshu.com'];
 
+// 没写 https:// 的裸链接（如 xhslink.cn/o/abc）：取文字里第一个像域名的片段补上 https://，
+// 之后照样走 hostMatches 白名单校验，冒充域名（xhslink.cn.evil.example、evilxhslink.cn）还是会被拒
+function findBareUrl(text) {
+  const m = String(text || '').match(/(?:^|[^\w.@\/:=-])((?:[a-z0-9-]+\.)+[a-z]{2,})(?![\w.-])([\/?#][^\s"'<>\\]*)?/i);
+  return m ? 'https://' + m[1] + (m[2] || '') : null;
+}
 function extractFirstUrl(text) {
-  const m = String(text || '').match(/https?:\/\/[^\s"'<>\\]+/);
-  if (!m) throw new Error('没有找到有效的小红书链接，请粘贴完整的分享链接');
-  const u = m[0].replace(/[),.;!?\]}>»」』】，。；：？！）】]+$/, '');
+  const hit = String(text || '').match(/https?:\/\/[^\s"'<>\\]+/);
+  const raw = hit ? hit[0] : findBareUrl(text);
+  if (!raw) throw new Error('没有找到有效的小红书链接，请粘贴完整的分享链接');
+  const u = raw.replace(/[),.;!?\]}>»」』】，。；：？！）】]+$/, '');
   let h = '';
   try { h = new URL(u).hostname; } catch {}
   if (!hostMatches(h, XHS_PAGE_HOSTS)) throw new Error('只支持小红书链接（xiaohongshu.com / xhslink.cn / xhslink.com）');

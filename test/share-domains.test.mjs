@@ -68,3 +68,37 @@ for (const link of [
     assert.ok(!r.calls.some((u) => /evil|xhslink\.co\//.test(u)), '不该去抓冒充域名：' + r.calls.join(','));
   });
 }
+
+// 没写 https:// 的裸链接
+for (const text of [
+  'xhslink.cn/o/AxnRePgIokn',
+  '93 【小红薯的笔记】 😆 Xy9Zw8 😆 xhslink.cn/o/AxnRePgIokn 复制本条信息，打开【小红书】App查看精彩内容！',
+  `www.xiaohongshu.com/explore/${NOTE}?xsec_token=T`,
+  'XHSLINK.COM/o/8xYzAb',
+]) {
+  test('裸链接补 https:// 后接受 ' + text.slice(0, 40), async () => {
+    const r = await parse(text);
+    assert.ok(!r.body.includes(REJECT) && !r.body.includes('没有找到'), r.status + ' ' + r.body.slice(0, 160));
+    assert.ok(r.calls.length > 0 && r.calls.every((u) => /^https:\/\/((www\.)?(xhslink|xiaohongshu)\.(cn|com)|redfox\.hk)\//i.test(u)), r.calls.join('\n'));
+  });
+}
+for (const text of [
+  'xhslink.cn.evil.example/o/x',
+  'evilxhslink.cn/o/x',
+  'xhslink.cn-evil.com/o/x',
+  'evil.example/?u=xhslink.cn/o/x',
+  'evil.example/xhslink.cn/o/x',
+  'user@xhslink.cn/o/x',
+]) {
+  test('裸链接冒充域名仍拒 ' + text, async () => {
+    const r = await parse(text);
+    assert.equal(r.status, 400, r.body.slice(0, 160));
+    assert.ok(r.body.includes(REJECT) || r.body.includes('没有找到'), r.body.slice(0, 160));
+    assert.equal(r.calls.length, 0, '不该去抓：' + r.calls.join(','));
+  });
+}
+test('没有链接的文字仍提示没找到', async () => {
+  const r = await parse('今天天气真好 3.5 分');
+  assert.equal(r.status, 400);
+  assert.ok(r.body.includes('没有找到'), r.body.slice(0, 160));
+});
