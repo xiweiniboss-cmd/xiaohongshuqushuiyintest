@@ -305,6 +305,16 @@ function jxParseHeaders(h) {
   return h;
 }
 </script>
+<style>
+header.topbar { height: auto; min-height: 58px; padding-bottom: 12px; border-bottom: 1px solid var(--line-strong); }
+.quota-chip { border: 1px solid var(--line-strong); padding: 5px 10px; border-radius: 99px; }
+.hero { margin-top: clamp(24px, 5vw, 48px); }
+.hero h1 { font-size: clamp(30px, 5vw, 46px); line-height: 1.18; }
+.card.work-card { border-top: 3px solid var(--accent); padding: clamp(16px, 3vw, 26px); box-shadow: 0 12px 36px rgba(64,43,25,.07); }
+.link-label { display: block; font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
+.input-tools button, #parseBtn { min-height: 44px; }
+@media (min-width: 800px) { .wrap { max-width: 740px; } }
+</style>
 </head>
 <body>
 <div class="wrap">
@@ -323,7 +333,8 @@ function jxParseHeaders(h) {
     <p class="hero-count">本站已解析 <b id="parseCount">-</b> 次</p>
   </section>
 
-  <div class="card">
+  <div class="card work-card">
+    <label class="link-label" for="linkInput">笔记分享链接</label>
     <div class="input-shell">
       <textarea id="linkInput" placeholder="粘贴小红书链接，例如 http://xhslink.cn/o/xxxxx"></textarea>
       <div class="input-tools">
