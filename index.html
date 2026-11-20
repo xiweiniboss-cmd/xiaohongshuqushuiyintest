@@ -6,7 +6,7 @@
 <meta name="referrer" content="no-referrer">
 <title>小红书无水印解析</title>
 <meta name="description" content="粘贴小红书分享链接，保存笔记里的原图和无水印视频。">
-<meta name="theme-color" content="#141415">
+<meta name="theme-color" content="#f4eedc">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23141415'/%3E%3Cpath d='M14 24V14h10M40 14h10v10M50 40v10H40M24 50H14V40' fill='none' stroke='%23FF2442' stroke-width='4'/%3E%3Cpath d='M27 22v20l16-10z' fill='%23FF2442'/%3E%3C/svg%3E">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="小红书无水印解析">
@@ -25,10 +25,10 @@
 /* unslop：暖白纸面 + 小红书红只用在主动作和「原图」小章。界面设计参考 unslop by @heydamir（CC BY 4.0） */
 *{ box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
 :root{
-  --bg:#f7f4ee; --card:#fdfbf7; --raised:#efe9df;
+  --bg:#f4eedc; --card:#fbf7eb; --raised:#f1e9d5;
   --line:rgba(31,27,22,.08); --line-strong:rgba(31,27,22,.14);
-  --text:#1f1b16; --text-2:#5e554a; --muted:#7b7266; --faint:#7b7266;
-  --brand:#ff2442; --accent:#d81e3b; --accent-press:#c01a34;
+  --text:#2a2118; --text-2:#564736; --muted:#705f49; --faint:#705f49;
+  --brand:#9c4c26; --accent:#9c4c26; --accent-press:#823c1d;
   --ease:cubic-bezier(.2,.8,.2,1);
   --mono:ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -134,7 +134,7 @@ video.preview{ width:100%; border-radius:8px; background:#111; margin-top:16px; 
 .fb-chips{ display:flex; flex-wrap:wrap; gap:8px; }
 .fb-chip{ height:32px; padding:0 12px; border-radius:999px; border:1px solid var(--line-strong); background:transparent; color:var(--text-2); font-size:13px; font-weight:500; }
 .fb-chip:hover{ background:var(--raised); }
-.fb-chip.on{ background:var(--text); color:#f7f4ee; border-color:transparent; }
+.fb-chip.on{ background:var(--text); color:#f4eedc; border-color:transparent; }
 .fb-field{ display:block; margin-top:14px; }
 .fb-field > span{ display:flex; align-items:baseline; gap:6px; font-size:13px; font-weight:500; line-height:20px; margin-bottom:6px; }
 .fb-field > span i{ font-style:normal; font-weight:400; color:var(--muted); font-size:12px; }
@@ -173,7 +173,7 @@ video.preview{ width:100%; border-radius:8px; background:#111; margin-top:16px; 
 #lightbox .close{ position:absolute; top:calc(12px + env(safe-area-inset-top)); right:12px; width:44px; height:44px; display:grid; place-items:center; color:#fff; background:none; border:none; padding:0; }
 #lightbox .close .ico{ width:20px; height:20px; }
 
-#toast{ position:fixed; left:50%; bottom:96px; transform:translateX(-50%); background:var(--text); color:#f7f4ee; font-size:13px; line-height:20px; padding:8px 16px; border-radius:10px; z-index:99; display:none; max-width:88vw; text-align:center; }
+#toast{ position:fixed; left:50%; bottom:96px; transform:translateX(-50%); background:var(--text); color:#f4eedc; font-size:13px; line-height:20px; padding:8px 16px; border-radius:10px; z-index:99; display:none; max-width:88vw; text-align:center; }
 footer{ text-align:center; color:var(--muted); font-size:12px; margin-top:32px; line-height:20px; }
 
 #fbBtn{ position:fixed; right:16px; bottom:calc(20px + env(safe-area-inset-bottom)); z-index:40; display:inline-flex; align-items:center; gap:8px; width:auto; height:42px; padding:0 14px 0 6px; border-radius:999px; border:1px solid var(--line-strong); background:rgba(253,251,247,.92); color:var(--text); box-shadow:0 8px 24px rgba(31,27,22,.1); backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px); font:500 13px/1 inherit; letter-spacing:0; touch-action:none; user-select:none; -webkit-user-select:none; cursor:pointer; transition:background-color .16s var(--ease), transform .16s var(--ease), border-color .16s var(--ease); }
@@ -314,6 +314,17 @@ header.topbar { height: auto; min-height: 58px; padding-bottom: 12px; border-bot
 .link-label { display: block; font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 8px; }
 .input-tools button, #parseBtn { min-height: 44px; }
 @media (min-width: 800px) { .wrap { max-width: 740px; } }
+body {
+  background-image: radial-gradient(ellipse at 12% 0%, rgb(255 250 236 / 48%), transparent 58%),
+    radial-gradient(ellipse at 94% 100%, rgb(181 145 81 / 12%), transparent 65%);
+}
+.btn-primary { background: linear-gradient(180deg, #a5502a, #88401f); color: #fffaf0; }
+.btn-primary:hover { background: #843d1f; }
+.btn-ghost { background: linear-gradient(180deg, #fdfaf0, #f1e7cf); }
+.card { box-shadow: 0 2px 4px rgb(72 52 24 / 5%), 0 10px 24px -8px rgb(72 52 24 / 12%); }
+
+.hero h1 { font-style: oblique 8deg; }
+.brand-sub { font-family: "Songti SC", "STSong", "Noto Serif SC", "Noto Serif CJK SC", Georgia, serif; font-style: italic; letter-spacing: .03em; }
 </style>
 </head>
 <body>
