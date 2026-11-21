@@ -360,7 +360,7 @@ body {
     </div>
     <button class="btn-primary" id="parseBtn" style="width:100%;margin-top:14px">解析</button>
     <div id="tsParseWidget" style="display:none;margin-top:10px"></div>
-<div class="hint">无需登录，服务器直接抓取笔记页面</div>
+<div class="hint">请仅保存你自己的作品，或已获授权保存的内容。<br>无需登录，服务器直接抓取笔记页面</div>
   </div>
 
 
@@ -380,10 +380,10 @@ body {
   <section class="jxh" id="jxHist" aria-label="历史解析">
     <div class="jxh-head">
       <button type="button" class="jxh-toggle" id="jxhToggle" aria-expanded="false" aria-controls="jxhBody"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>历史解析 <span class="jxh-count" id="jxhCount">0</span><span class="jxh-caret"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></span></button>
-      <button type="button" class="jxh-clear" id="jxhClear" hidden>清空历史</button>
+      <button type="button" class="jxh-clear" id="jxhClear" title="清除本浏览器保存的解析历史" hidden>清空历史</button>
     </div>
     <div class="jxh-body" id="jxhBody" hidden>
-      <p class="jxh-note">只保存在本设备的浏览器里，不会上传；最多保留 50 条。只记原链接，下载直链会过期，需要时点「重新解析」。</p>
+      <p class="jxh-note">清空历史只会删除本浏览器的记录；最多保留 50 条。只记原链接，下载直链会过期，需要时点「重新解析」。</p>
       <p class="jxh-note jxh-note-warn" id="jxhWarn" hidden>当前浏览器无法使用本地存储（可能是无痕模式或被禁用），历史只在本页有效，刷新后不会保留。</p>
       <ul class="jxh-list" id="jxhList"></ul>
       <div class="jxh-empty" id="jxhEmpty">暂无历史解析记录，解析成功后会自动记在这里</div>
@@ -391,7 +391,8 @@ body {
     <div class="jxh-msg" id="jxhMsg" aria-live="polite"></div>
   </section>
 
-  <footer>仅供个人学习与收藏使用，请尊重原作者版权<br>请勿用于商用或跨平台搬运<br><span class="jx-privacy">为防滥用，本站会记录解析链接、IP、归属地和设备标识与特征，保留 30 天。</span></footer>
+  <footer>仅供个人学习与收藏使用，请尊重原作者版权<br>请勿用于商用或跨平台搬运<br><span class="jx-privacy">为防滥用，本站会记录解析链接、IP、归属地和设备标识与特征，保留 30 天。</span><br><button type="button" id="rightsComplaint">版权投诉</button>
+    <details><summary>隐私说明</summary><p>服务器使用设备 ID 和根据浏览器及屏幕特征生成的指纹来限制滥用。清空历史仅删除本浏览器保存的解析历史。如需查询或申请删除服务器记录，请通过本站反馈提供站点、解析时间和回复方式。</p></details></footer>
 </div>
 
 <!-- 下载提示框 -->
@@ -438,8 +439,10 @@ body {
       <button type="button" class="fb-chip" data-chip="下载失败">下载失败</button>
       <button type="button" class="fb-chip" data-chip="还有水印">还有水印</button>
       <button type="button" class="fb-chip" data-chip="视频有问题">视频有问题</button>
+      <button type="button" class="fb-chip" data-chip="版权投诉">版权投诉</button>
       <button type="button" class="fb-chip" data-chip="其他">其他</button>
     </div>
+    <p class="fb-note" id="rightsHelp" hidden>请填写原作品链接、你与作品的权利关系、涉及内容，并留下回复方式。本表单将投诉提交至小红书解析站。</p>
     <label class="fb-field">
       <span>怎么回事</span>
       <textarea id="fbMsg" maxlength="2000" placeholder="例如：这条笔记解析出来是空白，或者图片点保存没反应。链接也可以直接贴在这里。"></textarea>
@@ -788,6 +791,7 @@ async function doParse() {
     currentData = data;
     renderResult(data);
     try { if (window.JiexiHistory) window.JiexiHistory.add({ url: text, title: data.title || data.desc, cover: data.cover || (data.images && data.images[0] && (data.images[0].url_webp || data.images[0].url)) || '' }); } catch(e){}
+    window.showOriginalWork(text, data);
     // 解析成功，本站计数 +1
     try {
       const el = $('parseCount');
@@ -1230,6 +1234,24 @@ var JiexiHistoryCore = (function(){
   return { MAX: MAX, isHttp: isHttp, firstUrl: firstUrl, esc: esc, clean: clean, probe: probe, load: load, save: save, add: add, remove: remove, fmtTime: fmtTime, renderItems: renderItems };
 })();
 /* JIEXI_HISTORY_CORE_END */
+window.showOriginalWork = function (source, data) {
+  var box = document.getElementById('result');
+  var old = box.querySelector('.original-work');
+  if (old) old.remove();
+  var url = JiexiHistoryCore.firstUrl(source);
+  if (!url) return;
+  var row = document.createElement('p');
+  row.className = 'original-work';
+  var link = document.createElement('a');
+  link.href = url;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.textContent = '查看原作品';
+  row.appendChild(link);
+  var author = typeof data.author === 'string' ? data.author : data.author && data.author.nickname;
+  if (typeof author === 'string' && author.trim()) row.appendChild(document.createTextNode(' · 作者：' + author));
+  box.appendChild(row);
+};
 
   var CFG = {"key": "jiexi_history_xiaohongshu_v1", "input": "linkInput", "btn": "parseBtn"};
   var C = JiexiHistoryCore;
@@ -1362,6 +1384,36 @@ var JiexiHistoryCore = (function(){
     }
     if (history.replaceState) history.replaceState(null, '', location.pathname);
   } catch (e) {}
+})();
+</script>
+
+<script>
+(function () {
+  var chips = document.getElementById('fbChips');
+  var complaint = chips.querySelector('[data-chip="版权投诉"]');
+  var help = document.getElementById('rightsHelp');
+  var message = document.getElementById('fbMsg');
+  var contact = document.getElementById('fbContact');
+  function sync() { help.hidden = !complaint.classList.contains('on'); }
+  new MutationObserver(sync).observe(complaint, { attributes: true, attributeFilter: ['class'] });
+  function openComplaint() {
+    document.getElementById('fbBtn').click();
+    if (!complaint.classList.contains('on')) complaint.click();
+    sync();
+    message.focus();
+  }
+  document.getElementById('rightsComplaint').addEventListener('click', openComplaint);
+  document.getElementById('fbSubmit').addEventListener('click', function (event) {
+    if (!complaint.classList.contains('on')) return;
+    var missing = !message.value.trim() ? message : !contact.value.trim() ? contact : null;
+    if (missing) {
+      event.stopImmediatePropagation();
+      missing.setCustomValidity(missing === message ? '请填写原作品链接和权利说明。' : '请填写回复方式。');
+      missing.reportValidity();
+      missing.setCustomValidity('');
+    }
+  }, true);
+  if (new URLSearchParams(location.search).get('feedback') === 'copyright') openComplaint();
 })();
 </script>
 </body>
