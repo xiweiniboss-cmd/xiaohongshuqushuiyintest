@@ -361,7 +361,16 @@ function cleanTitle(t, fallback) {
   );
 }
 function isVideoUrl(u) {
-  return /\.(?:mp4|m3u8)(?:\?|$)/i.test(u || '');
+  try {
+    const url = new URL(u);
+    if (!/^https?:$/.test(url.protocol)) return false;
+    if (/\.(?:mp4|m3u8)$/i.test(url.pathname)) return true;
+    // 小红书的视频 CDN 也会返回不带文件扩展名的 spectrum / stream 地址。
+    return /^sns-video-[a-z0-9-]+\.xhscdn\.com$/i.test(url.hostname) &&
+      /^\/(?:spectrum|stream)\/[^/]+/.test(url.pathname);
+  } catch {
+    return false;
+  }
 }
 // WebP CDN 链接 -> ci.xiaohongshu.com 无损 PNG
 function convertToPng(webpUrl) {
@@ -464,7 +473,7 @@ function extractImages(data) {
   const push = (u) => {
     if (typeof u !== 'string' || !u) return;
     const h = ensureHttps(normalizeUrl(u));
-    if (!/^https?:\/\//i.test(h) || seen.has(h)) return;
+    if (!/^https?:\/\//i.test(h) || isVideoUrl(h) || seen.has(h)) return;
     seen.add(h);
     out.push({ url_webp: h, url_png: convertToPng(h) || h, width: null, height: null });
   };
