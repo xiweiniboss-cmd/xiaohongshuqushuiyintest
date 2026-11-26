@@ -793,10 +793,23 @@ async function handleParse(request, env) {
   }
 }
 
-/* ================= /api/media（代理下载，未变） ================= */
+// Content-Disposition：filename 给 ASCII 兜底，filename* 给 UTF-8 原名（RFC 6266 / 5987）
+function contentDisposition(type, name) {
+  const raw = String(name || 'download').replace(/[\r\n"\\]/g, '').slice(0, 120) || 'download';
+  const ascii = raw.replace(/[^\x20-\x7e]/g, '_').replace(/[;%]/g, '_') || 'download';
+  const star = encodeURIComponent(raw).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+  return type + '; filename="' + ascii + '"; filename*=UTF-8\'\'' + star;
+}
+
+/* ================= /api/media（代理：预览 / 缩略图默认不带 Content-Disposition；?download=1 带 attachment 给浏览器原生下载） ================= */
 async function handleMedia(request) {
+  const method = request.method;
+  if (method !== 'GET' && method !== 'HEAD') return new Response('method not allowed', { status: 405, headers: { Allow: 'GET, HEAD' } });
+  const isHead = method === 'HEAD';
   const u = new URL(request.url);
   const target = u.searchParams.get('url') || '';
+  const download = u.searchParams.get('download') === '1';
+  const filename = (u.searchParams.get('filename') || 'xhs_media').replace(/["\r\n]/g, '').slice(0, 80) || 'xhs_media';
   if (!/^https?:\/\//i.test(target)) return new Response('missing url', { status: 400 });
   let host = '';
   try {
@@ -808,12 +821,15 @@ async function handleMedia(request) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 30000);
   try {
-    // 手动跟随跳转，每一跳都重新校验域名（以前 redirect:'follow' 只校验第一跳）
+    // 转发合法的 Range（拖进度条 / 大小探测）；手动跟随跳转，每一跳都重新校验域名
+    const range = request.headers.get('range') || '';
+    const okRange = /^bytes=\d*-\d*(,\s*\d*-\d*)*$/.test(range);
     let cur = target;
     let resp = null;
     for (let i = 0; i < 4; i++) {
       resp = await fetch(cur, {
-        headers: { 'User-Agent': UA_PC, Referer: 'https://www.xiaohongshu.com/', Accept: '*/*', ...(request.headers.get('range') ? { Range: request.headers.get('range') } : {}) },
+        method: isHead ? 'HEAD' : 'GET',
+        headers: { 'User-Agent': UA_PC, Referer: 'https://www.xiaohongshu.com/', Accept: '*/*', ...(okRange ? { Range: range } : {}) },
         redirect: 'manual',
         signal: ctrl.signal,
       });
@@ -827,13 +843,26 @@ async function handleMedia(request) {
       }
       break;
     }
-    if (!resp || !(resp.ok || resp.status === 206) || !resp.body) return new Response(`upstream ${resp ? resp.status : 0}`, { status: 502 });
+    if (resp && resp.status === 416) {
+      const h416 = new Headers({ 'Cache-Control': 'no-store' });
+      if (resp.headers.get('content-range')) h416.set('Content-Range', resp.headers.get('content-range'));
+      return new Response(null, { status: 416, headers: h416 });
+    }
+    if (!resp || !(resp.ok || resp.status === 206) || (!resp.body && !isHead)) return new Response(`upstream ${resp ? resp.status : 0}`, { status: 502 });
     // 只转发必要的响应头（不再原样转发 set-cookie 等）
     const headers = new Headers();
     for (const k of ['content-type', 'content-length', 'accept-ranges', 'content-range', 'last-modified', 'etag'])
       if (resp.headers.get(k)) headers.set(k, resp.headers.get(k));
-    headers.set('Cache-Control', 'public, max-age=3600');
-    return new Response(resp.body, { status: resp.status === 206 ? 206 : 200, headers });
+    if (resp.status === 206) headers.set('Accept-Ranges', 'bytes');
+    if (download) {
+      headers.set('Content-Disposition', contentDisposition('attachment', filename));
+      headers.set('X-Content-Type-Options', 'nosniff');
+      headers.set('Cache-Control', 'no-store');
+    } else {
+      headers.set('Cache-Control', 'public, max-age=3600');
+    }
+    if (isHead) { try { if (resp.body) await resp.body.cancel(); } catch {} }
+    return new Response(isHead ? null : resp.body, { status: resp.status === 206 ? 206 : 200, headers });
   } catch {
     return new Response('proxy error', { status: 502 });
   } finally {

@@ -111,6 +111,11 @@ video.preview{ width:100%; border-radius:8px; background:#111; margin-top:16px; 
 .thumb .dl{ position:absolute; right:4px; bottom:2px; background:none; border:none; color:var(--text-2); font-size:13px; line-height:16px; padding:2px 4px; }
 .thumb .dl:hover{ color:var(--text); }
 .actions{ display:flex; gap:8px; margin-top:16px; }
+/* 文件大小 / 交给浏览器下载（fix-large-download） */
+.sizeline{ margin-top:12px; font-size:13px; line-height:18px; color:var(--muted); }
+.sizeline.is-warn{ color:#835011; font-weight:500; }
+.sizeline.is-warn::before{ content:"⚠ "; }
+.dlsent{ margin-top:12px; font-size:13px; line-height:20px; color:var(--text); }
 .link-row{ display:flex; gap:8px; margin-top:8px; }
 .link-row .btn-ghost{ flex:1; }
 
@@ -734,9 +739,54 @@ async function downloadAllImages() {
 }
 
 // ---------- 视频 ----------
+// 大文件：经 /api/media 取 1 字节读总大小；超过 BIG_DL 或大小未知 → 普通 <a> 指向同源 /api/media?download=1（带 attachment），不读进内存
+const BIG_DL = 100 * 1048576, HUGE_FILE = 500 * 1048576, PROBE_TIMEOUT = 8000;
+function fmtSize(b) { return b >= 1073741824 ? (b / 1073741824).toFixed(1) + ' GB' : Math.max(1, Math.round(b / 1048576)) + ' MB'; }
+async function probeVideoSize(url) {
+  const ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = setTimeout(() => ctrl && ctrl.abort(), PROBE_TIMEOUT);
+  try {
+    const r = await fetch(mediaProxy(url), { headers: { Range: 'bytes=0-0' }, referrerPolicy: 'no-referrer', signal: ctrl ? ctrl.signal : undefined });
+    let size = null;
+    const m = /\/(\d+)\s*$/.exec(r.headers.get('content-range') || '');
+    if (r.status === 206 && m) size = Number(m[1]);
+    else if (r.status === 200) { const cl = Number(r.headers.get('content-length')); if (cl > 0) size = cl; }
+    try { if (r.body && r.body.cancel) r.body.cancel(); } catch (e) {}
+    return Number.isFinite(size) && size > 0 ? size : null;
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+function showVideoSize(size) {
+  const el = $('sizeLine');
+  if (!el) return;
+  if (size === null) { el.style.display = 'none'; return; }
+  el.className = 'sizeline' + (size > HUGE_FILE ? ' is-warn' : '');
+  el.textContent = '文件大小：约 ' + fmtSize(size) + (size > HUGE_FILE ? '，异常大，下载会很慢、很占流量' : '');
+  el.style.display = 'block';
+}
+function nativeVideoDownload(url, name) {
+  const a = document.createElement('a');
+  a.href = mediaProxy(url) + '&download=1&filename=' + encodeURIComponent(name);
+  a.download = name; a.rel = 'noopener';
+  document.body.appendChild(a); a.click();
+  setTimeout(() => a.remove(), 2000);
+  const sent = $('dlSent');
+  if (sent) sent.style.display = 'block';
+}
 async function downloadVideo() {
   const url = currentData.video_url;
   const name = cleanName(currentData.title) + '.mp4';
+  const btn = $('dlVideoBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '正在检查文件大小…'; }
+  let size = null;
+  try { size = await (currentData._sizeP || (currentData._sizeP = probeVideoSize(url))); } catch (e) {}
+  if (btn) { btn.disabled = false; btn.textContent = '下载视频'; }
+  showVideoSize(size);
+  if (size === null || size > BIG_DL) { nativeVideoDownload(url, name); return; }
+  if ($('dlSent')) $('dlSent').style.display = 'none';
   openSheet(
     '保存无水印视频',
     '点击开始下载后会获取视频并弹出系统分享，请选择"存储视频"。若获取失败会自动在新页面打开视频。',
@@ -834,7 +884,9 @@ function renderResult(data) {
       ${data.desc ? `<p class="note-desc">${esc(data.desc)}</p>` : ''}
       <video class="preview" id="vPreview" controls playsinline preload="metadata"
              src="${mediaProxy(data.video_url)}"></video>
+      <div class="sizeline" id="sizeLine" style="display:none" role="status"></div>
       <div class="actions"><button class="btn-primary" id="dlVideoBtn">下载视频</button></div>
+      <div class="dlsent" id="dlSent" style="display:none" role="status">已交给浏览器下载，请在浏览器的下载列表里查看进度。</div>
       <div class="link-row">
         <button class="btn-ghost" id="copyVLink">复制视频直链</button>
         <button class="btn-ghost" id="openVLink">新页面打开</button>
@@ -865,6 +917,9 @@ function renderResult(data) {
       v.src = data.video_url;
     });
     $('dlVideoBtn').onclick = downloadVideo;
+    // 解析完就探测一次大小（经本站代理只取 1 字节）显示在结果卡上
+    data._sizeP = probeVideoSize(data.video_url);
+    data._sizeP.then((sz) => { if (currentData === data) showVideoSize(sz); });
     $('copyVLink').onclick = () => copyText(data.video_url, '视频直链已复制');
     $('openVLink').onclick = () => openHttp(data.video_url);
   } else {
