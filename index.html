@@ -560,7 +560,13 @@ var JxTs = (function(){
     }
     // token 只能用一次：请求发出后重置，下次会重新验证（通常无感自动完成）
     function used(){ if (wid !== null) { try { turnstile.reset(wid); } catch (e) {} } }
-    return { token: token, used: used };
+    function remove(){
+      if (wid === null) return;
+      try { turnstile.remove(wid); } catch (e) {}
+      wid = null;
+      document.getElementById(boxId).style.display = 'none';
+    }
+    return { token: token, used: used, remove: remove };
   }
   return { siteKey: siteKey, script: script, make: make };
 })();
@@ -824,6 +830,7 @@ function copyText(t, msg) {
 
 // ---------- 解析 ----------
 async function doParse() {
+  if ($('parseBtn').disabled) return;
   const text = $('linkInput').value.trim();
   if (!text) { toast('请先粘贴小红书分享链接'); return; }
   $('result').style.display = 'none';
@@ -837,7 +844,6 @@ async function doParse() {
     let apiUrl = '/api/parse?url=' + encodeURIComponent(text);
     if (deviceId) apiUrl += '&deviceId=' + encodeURIComponent(deviceId);
     if (tsToken) apiUrl += '&turnstile=' + encodeURIComponent(tsToken);
-    JxTsParse.used();
     const r = await fetch(apiUrl, { headers: jxParseHeaders() });
     const ct = r.headers.get('content-type') || '';
     const bodyText = await r.text();
@@ -866,6 +872,7 @@ async function doParse() {
   } catch (e) {
     toast('解析失败：' + (e.message || e), 4200);
   } finally {
+    JxTsParse.remove();
     $('status').style.display = 'none';
     $('parseBtn').disabled = false;
   }
